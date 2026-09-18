@@ -57,15 +57,14 @@ public final class MetalRenderer {
         // 2) app bundle Resources/default.metallib（手动组装 .app 时由 CI 拷贝）
         // 3) device.makeDefaultLibrary()（CLI 直接跑 SPM 产物时的回退）
         let library: MTLLibrary?
-        if let url = Bundle.module.url(forResource: "default", withExtension: "metallib") {
-            library = try? device.makeLibrary(URL: url)
+        // SPM 不自动编译 .metal（在 Linux 上验证不了 metal 工具链），
+        // CI 用 xcrun metal 编译 default.metallib 放进 app Resources。
+        let appMetallib = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/default.metallib")
+        if FileManager.default.fileExists(atPath: appMetallib.path) {
+            library = try? device.makeLibrary(URL: appMetallib)
         } else {
-            let appMetallib = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/default.metallib")
-            if FileManager.default.fileExists(atPath: appMetallib.path) {
-                library = try? device.makeLibrary(URL: appMetallib)
-            } else {
-                library = device.makeDefaultLibrary()
-            }
+            // 开发模式回退：要求 SDK 里由 makeDefaultLibrary 提供（本地 swift run 场景）
+            library = device.makeDefaultLibrary()
         }
         guard let library else {
             throw InitError.noLibrary("metallib not found (SPM resource bundle / app Resources / default)")

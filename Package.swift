@@ -18,9 +18,7 @@ let package = Package(
             name: "CaptureStreamUI",
             dependencies: ["CaptureStreamCore"],
             path: "Sources/CaptureStreamUI",
-            resources: [
-                .process("Shaders.metal")
-            ]
+            exclude: ["Shaders.metal"]   // 由 CI 用 xcrun metal 编译为 default.metallib
         ),
         .executableTarget(
             name: "CaptureStreamApp",
