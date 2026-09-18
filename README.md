@@ -27,3 +27,18 @@ Native macOS low-latency capture card viewer & performance diagnostics tool.
 - ⌘⇧F  Performance overlay
 - ⌘⏎   Fullscreen
 - ⌘,   Settings
+
+## Download
+- [Release v0.1.0](https://github.com/MazzyGi/CaptureStream/releases/tag/v0.1.0) — `CaptureStream.zip` (Apple Silicon, ad-hoc signed)
+- CI artifact from latest `main`: Actions → CI → Build CaptureStream.app
+
+## Architecture
+```
+AVCaptureSession (UVC) ──▶ BoundedFrameQueue (drop-oldest) ──▶ Render thread
+TestPatternSource (CI) ──┘        │                              │
+                                  ▼                              ▼
+                        PerformanceMonitor ◀──── CVMetalTextureCache → MTLTexture
+                        (per-stage FPS,          → shader: YUV→RGB / nearest /
+                         frame ID traces,          bilinear / bicubic / lanczos
+                         drop attribution)       → CAMetalLayer drawable
+```
