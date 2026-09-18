@@ -73,7 +73,7 @@ public final class CaptureDeviceManager: ObservableObject {
         for f in d.formats {
             let dims = CMVideoFormatDescriptionGetDimensions(f.formatDescription)
             guard dims.width > 0, dims.height > 0 else { continue }
-            let codec = CMVideoFormatDescriptionGetCodecType(f.formatDescription)
+            let codec = CMFormatDescriptionGetMediaSubType(f.formatDescription)
             let pf = Self.pixelFormatName(codec)
             for range in f.videoSupportedFrameRateRanges {
                 guard range.maxFrameRate > 0 else { continue }

@@ -54,7 +54,7 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
     private var configured = false
 
     public init(frameQueueCapacity: Int = 2,
-                policy: BoundedFrameQueue<Int>.OverflowPolicy = .dropOldest) {
+                policy: QueueOverflowPolicy = .dropOldest) {
         super.init()
         frameQueue = BoundedFrameQueue<CapturedFrame>(capacity: frameQueueCapacity, policy: policy)
         output.videoSettings = [:]   // 原生格式输出，不做 CPU 转换（§5）
@@ -90,7 +90,6 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
             throw CaptureSessionError.cannotConfigure("cannot add video output")
         }
         session.addOutput(output)
-        session.sessionPreset = .inputPriority   // 尊重设备格式而非 preset 缩放（§5）
         configured = true
         session.startRunning()
     }
@@ -117,7 +116,7 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
         guard let match = device.formats.first(where: { f in
             let dims = CMVideoFormatDescriptionGetDimensions(f.formatDescription)
             guard Int(dims.width) == format.width, Int(dims.height) == format.height else { return false }
-            let codec = CMVideoFormatDescriptionGetCodecType(f.formatDescription)
+            let codec = CMFormatDescriptionGetMediaSubType(f.formatDescription)
             guard CaptureDeviceManager.pixelFormatName(codec) == format.pixelFormat else { return false }
             return f.videoSupportedFrameRateRanges.contains {
                 Int($0.maxFrameRate.rounded()) == format.fps
@@ -137,7 +136,7 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
 
     private func activeFormatDescriptor(_ device: AVCaptureDevice) -> CaptureFormatDescriptor {
         let dims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
-        let codec = CMVideoFormatDescriptionGetCodecType(device.activeFormat.formatDescription)
+        let codec = CMFormatDescriptionGetMediaSubType(device.activeFormat.formatDescription)
         var fps = 0
         if let r = device.activeFormat.videoSupportedFrameRateRanges.first,
            device.activeVideoMinFrameDuration.isValid {
@@ -181,19 +180,7 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
                               didDrop sampleBuffer: CMSampleBuffer,
                               from connection: AVCaptureConnection) {
         // AVCaptureVideoDataOutput 丢弃晚帧：transport/queue 级丢帧（§16）
-        monitor?.noteQueueDrop()
-    }
-}
-
-extension PerformanceMonitor {
-    /// 队列/transport 层丢帧打点（AVFoundation didDrop 回调）。
-    public func noteQueueDrop() {
-        lock.lock(); defer { lock.unlock() }
-        drops[.capture, default: 0] += 1
-        appendEvent(DropEvent(stage: .capture, reason: .queueOverflow,
-                              at: CFAbsoluteTimeGetCurrent(),
-                              expectedFrameID: lastFrameID,
-                              detail: "AVFoundation dropped late frame"))
+        monitor?.noteAVFoundationDrop(at: CFAbsoluteTimeGetCurrent())
     }
 }
 #endif

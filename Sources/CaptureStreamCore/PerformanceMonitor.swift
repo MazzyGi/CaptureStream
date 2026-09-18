@@ -179,6 +179,15 @@ public final class PerformanceMonitor: @unchecked Sendable {
         return events
     }
 
+    /// AVFoundation 丢弃晚帧打点（queue/transport 级丢帧，§16）。
+    public func noteAVFoundationDrop(at t: Double) {
+        lock.lock(); defer { lock.unlock() }
+        drops[.capture, default: 0] += 1
+        appendEvent(DropEvent(stage: .capture, reason: .queueOverflow,
+                              at: t, expectedFrameID: lastFrameID,
+                              detail: "AVFoundation dropped late frame"))
+    }
+
     // MARK: - 快照（UI 5-10Hz 拉取）
 
     public func snapshot() -> Snapshot {

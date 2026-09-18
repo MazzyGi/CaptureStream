@@ -6,22 +6,24 @@ public struct Size: Sendable, Equatable {
     public init(width: Int, height: Int) { self.width = width; self.height = height }
 }
 
+/// 队列满时策略（顶层类型，避免泛型嵌套引用限制）。
+public enum QueueOverflowPolicy: Sendable {
+    case dropOldest   // 低延迟推荐
+    case dropNewest
+    case block
+}
+
 /// 有界帧队列（规范 §23）：满时按策略丢弃，绝不无限积压。
 public final class BoundedFrameQueue<T>: @unchecked Sendable {
-    public enum OverflowPolicy: Sendable {
-        case dropOldest   // 低延迟推荐
-        case dropNewest
-        case block
-    }
 
     private var items: [T] = []
     private let capacity: Int
-    private let policy: OverflowPolicy
+    private let policy: QueueOverflowPolicy
     private let lock = NSCondition()
     public private(set) var droppedCount = 0
     public private(set) var overflowCount = 0
 
-    public init(capacity: Int, policy: OverflowPolicy = .dropOldest) {
+    public init(capacity: Int, policy: QueueOverflowPolicy = .dropOldest) {
         precondition(capacity >= 1, "capacity must be >= 1")
         self.capacity = capacity
         self.policy = policy

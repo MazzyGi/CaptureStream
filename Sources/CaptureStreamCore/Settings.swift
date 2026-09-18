@@ -23,7 +23,7 @@ public enum LatencyMode: String, Sendable, CaseIterable, Codable {
         }
     }
 
-    public var recommendedPolicy: BoundedFrameQueue<Int>.OverflowPolicy {
+    public var recommendedPolicy: QueueOverflowPolicy {
         switch self {
         case .quality: return .block
         default: return .dropOldest
