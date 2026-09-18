@@ -22,14 +22,14 @@ struct CaptureStreamApp: App {
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) { }
-            CommandMenu("Performance") {
-                Toggle("Performance Overlay", isOn: $appState.settings.showPerformanceOverlay)
+            CommandMenu("性能") {
+                Toggle("性能悬浮层", isOn: $appState.settings.showPerformanceOverlay)
                     .keyboardShortcut("f", modifiers: [.command, .shift])
-                Toggle("Frame Debug", isOn: $appState.settings.showFrameDebug)
-                Button("Toggle Recording") { appState.toggleRecording() }
+                Toggle("帧调试信息", isOn: $appState.settings.showFrameDebug)
+                Button("开始/停止记录") { appState.toggleRecording() }
                 Divider()
-                Button("Export CSV…") { appState.exportCSV() }
-                Button("Export JSON…") { appState.exportJSON() }
+                Button("导出 CSV…") { appState.exportCSV() }
+                Button("导出 JSON…") { appState.exportJSON() }
             }
         }
     }

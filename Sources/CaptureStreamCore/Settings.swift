@@ -6,10 +6,10 @@ public enum LatencyMode: String, Sendable, CaseIterable, Codable {
 
     public var displayName: String {
         switch self {
-        case .quality: return "Quality"
-        case .balanced: return "Balanced"
-        case .lowLatency: return "Low Latency"
-        case .ultraLow: return "Ultra Low Latency"
+        case .quality: return "画质优先"
+        case .balanced: return "均衡"
+        case .lowLatency: return "低延迟"
+        case .ultraLow: return "超低延迟"
         }
     }
 
@@ -47,6 +47,18 @@ public struct CaptureFormatDescriptor: Sendable, Equatable, Codable {
         self.width = width; self.height = height; self.fps = fps; self.pixelFormat = pixelFormat
     }
     public var label: String { "\(width)×\(height) @ \(fps) FPS · \(pixelFormat)" }
+}
+
+/// 滤波算法中文名（UI 用）。
+public extension ScaleFilter {
+    var displayName: String {
+        switch self {
+        case .nearest: return "邻近采样 (Nearest)"
+        case .bilinear: return "双线性 (Bilinear)"
+        case .bicubic: return "双三次 (Bicubic)"
+        case .lanczos: return "Lanczos"
+        }
+    }
 }
 
 /// 采集设备描述。

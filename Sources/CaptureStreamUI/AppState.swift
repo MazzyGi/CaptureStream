@@ -53,9 +53,24 @@ public final class AppState: ObservableObject {
     }
 
     public var deviceName: String {
-        guard let id = selectedDeviceID else { return "No device" }
-        if id == Self.testPatternID { return "Test Pattern" }
-        return deviceManager.device(withID: id)?.name ?? "Unknown"
+        guard let id = selectedDeviceID else { return "未选择设备" }
+        if id == Self.testPatternID { return "测试图案" }
+        return deviceManager.device(withID: id)?.name ?? "未知设备"
+    }
+
+    /// 队列状态（诊断 FPS=0 用：帧是否到达渲染队列）。
+    public var pendingFramesLabel: String {
+        guard isRunning else { return "—" }
+        guard let s = captureSession else {
+            return sourceKind == .testPattern ? "…" : "—"
+        }
+        let n = s.pendingFrames
+        return n >= 2 ? "满" : "\(n)"
+    }
+
+    /// App 版本（bundle Info.plist，CI 注入日期+SHA）。
+    public static var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
     }
 
     // MARK: - 初始化
@@ -213,7 +228,7 @@ public final class AppState: ObservableObject {
                         self.monitor.currentResolution = Size(width: f.width, height: f.height)
                         self.monitor.currentFormat = f.pixelFormat
                     }
-                    // 音频
+                    // 音频（session 操作走 sessionQueue 与视频互斥）
                     if self.settings.audioOutputDeviceID != nil || !self.settings.audioMuted {
                         let ap = AudioPipeline(config: AudioPipeline.Config(
                             outputDeviceID: self.settings.audioOutputDeviceID,
@@ -221,7 +236,8 @@ public final class AppState: ObservableObject {
                             muted: self.settings.audioMuted,
                             delayMs: self.settings.audioDelayMs))
                         try? ap.startPlayback()
-                        ap.attach(to: session.session, deviceID: self.audioInputDeviceID(for: deviceID))
+                        ap.attach(to: session.session, sessionQueue: session.sessionQueue,
+                                  deviceID: self.audioInputDeviceID(for: deviceID))
                         self.audio = ap
                     }
                     self.startRenderLoopAndTimers()

@@ -54,33 +54,40 @@ public final class AudioPipeline: NSObject, AVCaptureAudioDataOutputSampleBuffer
     // MARK: - 采集（AVCaptureSession 由外部视频会话共享或独立创建）
 
     /// 附加到已有 AVCaptureSession 的音频输出（推荐：与视频同卡）。
-    public func attach(to session: AVCaptureSession, deviceID: String?) {
-        detach()
-        guard let device = deviceID.flatMap({ AVCaptureDevice(uniqueID: $0) })
-                ?? firstAudioCaptureDevice() else { return }
-        guard let input = try? AVCaptureDeviceInput(device: device),
-              session.canAddInput(input) else { return }
-        session.beginConfiguration()
-        session.addInput(input)
-        let out = AVCaptureAudioDataOutput()
-        out.setSampleBufferDelegate(self, queue: captureQueue)
-        if session.canAddOutput(out) { session.addOutput(out) }
-        session.commitConfiguration()
-        audioOutput = out
-        captureSession = session
+    /// sessionQueue：视频会话的串行队列，session 配置必须与视频会话互斥串行。
+    public func attach(to session: AVCaptureSession, sessionQueue: DispatchQueue, deviceID: String?) {
+        detach(on: sessionQueue)
+        sessionQueue.sync {
+            guard let device = deviceID.flatMap({ AVCaptureDevice(uniqueID: $0) })
+                    ?? firstAudioCaptureDevice() else { return }
+            guard let input = try? AVCaptureDeviceInput(device: device),
+                  session.canAddInput(input) else { return }
+            session.beginConfiguration()
+            session.addInput(input)
+            let out = AVCaptureAudioDataOutput()
+            out.setSampleBufferDelegate(self, queue: captureQueue)
+            if session.canAddOutput(out) { session.addOutput(out) }
+            session.commitConfiguration()
+            self.audioOutput = out
+            self.captureSession = session
+        }
     }
 
-    public func detach() {
-        if let session = captureSession, let out = audioOutput {
-            session.beginConfiguration()
-            if let input = session.inputs.first(where: { ($0 as? AVCaptureDeviceInput)?.device.hasMediaType(.audio) == true }) {
-                session.removeInput(input)
+    public func detach(on sessionQueue: DispatchQueue? = nil) {
+        let block = { [weak self] in
+            guard let self else { return }
+            if let session = self.captureSession, let out = self.audioOutput {
+                session.beginConfiguration()
+                if let input = session.inputs.first(where: { ($0 as? AVCaptureDeviceInput)?.device.hasMediaType(.audio) == true }) {
+                    session.removeInput(input)
+                }
+                session.removeOutput(out)
+                session.commitConfiguration()
             }
-            session.removeOutput(out)
-            session.commitConfiguration()
+            self.captureSession = nil
+            self.audioOutput = nil
         }
-        captureSession = nil
-        audioOutput = nil
+        if let sq = sessionQueue { sq.sync(execute: block) } else { block() }
     }
 
     private func firstAudioCaptureDevice() -> AVCaptureDevice? {

@@ -2,7 +2,7 @@
 import SwiftUI
 import CaptureStreamCore
 
-/// Settings 窗口（§24-§30）：分类 Tab。
+/// 设置窗口（§24-§30）：分类 Tab。
 public struct SettingsView: View {
     @ObservedObject var appState: AppState
 
@@ -12,14 +12,14 @@ public struct SettingsView: View {
 
     public var body: some View {
         TabView {
-            CaptureSettingsTab(appState: appState).tabItem { Label("Capture", systemImage: "av.remote") }
-            VideoSettingsTab(appState: appState).tabItem { Label("Video", systemImage: "film") }
-            ScalingSettingsTab(appState: appState).tabItem { Label("Scaling", systemImage: "arrow.up.left.and.arrow.down.right") }
-            AudioSettingsTab(appState: appState).tabItem { Label("Audio", systemImage: "speaker.wave.2") }
-            DisplaySettingsTab(appState: appState).tabItem { Label("Display", systemImage: "display") }
-            PerformanceSettingsTab(appState: appState).tabItem { Label("Performance", systemImage: "gauge") }
+            CaptureSettingsTab(appState: appState).tabItem { Label("采集", systemImage: "av.remote") }
+            VideoSettingsTab(appState: appState).tabItem { Label("视频", systemImage: "film") }
+            ScalingSettingsTab(appState: appState).tabItem { Label("缩放", systemImage: "arrow.up.left.and.arrow.down.right") }
+            AudioSettingsTab(appState: appState).tabItem { Label("音频", systemImage: "speaker.wave.2") }
+            DisplaySettingsTab(appState: appState).tabItem { Label("显示", systemImage: "display") }
+            PerformanceSettingsTab(appState: appState).tabItem { Label("性能", systemImage: "gauge") }
         }
-        .frame(width: 520, height: 420)
+        .frame(width: 540, height: 440)
         .padding()
     }
 }
@@ -29,13 +29,14 @@ struct CaptureSettingsTab: View {
 
     var body: some View {
         Form {
-            Picker("Auto Reconnect", selection: $appState.settings.autoReconnect) {
-                Text("On").tag(true); Text("Off").tag(false)
+            Picker("自动重连", selection: $appState.settings.autoReconnect) {
+                Text("开启").tag(true); Text("关闭").tag(false)
             }
-            LabeledContent("Detected Devices") {
-                Text("\(appState.deviceManager.devices.count) video, \(appState.deviceManager.audioDevices.count) audio")
+            LabeledContent("已检测设备") {
+                Text("视频 \(appState.deviceManager.devices.count) 个 · 音频 \(appState.deviceManager.audioDevices.count) 个")
             }
-            Button("Refresh Devices") { appState.deviceManager.refresh() }
+            Button("刷新设备列表") { appState.deviceManager.refresh() }
+            LabeledContent("版本") { Text(AppState.appVersion) }
         }
         .formStyle(.grouped)
     }
@@ -46,19 +47,16 @@ struct VideoSettingsTab: View {
 
     var body: some View {
         Form {
-            Picker("Hardware Decode", selection: .constant(true)) {
-                Text("ON").tag(true)
-            }
-            .disabled(true)
-            LabeledContent("Decoder") { Text("AVFoundation (UVC passthrough)") }
-            Picker("Latency Mode", selection: $appState.settings.latencyMode) {
+            LabeledContent("硬件解码") { Text("直通（UVC 未压缩流）") }
+            LabeledContent("解码器") { Text("AVFoundation (UVC passthrough)") }
+            Picker("延迟模式", selection: $appState.settings.latencyMode) {
                 ForEach(LatencyMode.allCases, id: \.self) { Text($0.displayName).tag($0) }
             }
-            Picker("Frame Pacing", selection: $appState.settings.framePacing) {
-                Text("VSync").tag(FramePacingMode.vsync)
-                Text("Immediate").tag(FramePacingMode.immediately)
+            Picker("帧调度", selection: $appState.settings.framePacing) {
+                Text("垂直同步 (VSync)").tag(FramePacingMode.vsync)
+                Text("立即呈现 (最低延迟)").tag(FramePacingMode.immediately)
             }
-            Stepper("Frame Buffer: \(appState.settings.frameBufferCount)",
+            Stepper("缓冲帧数：\(appState.settings.frameBufferCount)",
                     value: $appState.settings.frameBufferCount, in: 1...4)
         }
         .formStyle(.grouped)
@@ -70,21 +68,21 @@ struct ScalingSettingsTab: View {
 
     var body: some View {
         Form {
-            Picker("Scaling", selection: $appState.settings.scalingMode) {
-                ForEach(ScalingMode.allCases, id: \.self) { Text($0.displayName).tag($0) }
+            Picker("缩放模式", selection: $appState.settings.scalingMode) {
+                ForEach(ScalingMode.allCases, id: \.self) { Text(m0.displayName).tag(m0) }
             }
-            Picker("Filter", selection: $appState.settings.scaleFilter) {
-                ForEach(ScaleFilter.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
+            Picker("滤波算法", selection: $appState.settings.scaleFilter) {
+                ForEach(ScaleFilter.allCases, id: \.self) { Text(f0.displayName).tag(f0) }
             }
             Slider(value: $appState.settings.sharpen, in: 0...100, step: 1) {
-                Text("Sharpen \(Int(appState.settings.sharpen))")
+                Text("锐化 \(Int(appState.settings.sharpen))")
             }
-            Toggle("Integer Scaling", isOn: $appState.settings.integerScaling)
-            Toggle("Super Resolution (experimental)", isOn: $appState.settings.superResolution)
-            Toggle("Frame Interpolation (experimental)", isOn: $appState.settings.frameInterpolation)
+            Toggle("整数倍缩放", isOn: $appState.settings.integerScaling)
+            Toggle("超分辨率（实验性）", isOn: $appState.settings.superResolution)
+            Toggle("插帧（实验性）", isOn: $appState.settings.frameInterpolation)
             if appState.settings.scalingMode == .custom {
                 Slider(value: $appState.settings.customScale, in: 0.1...8, step: 0.1) {
-                    Text("Custom Scale \(appState.settings.customScale, specifier: "%.1fx")")
+                    Text("自定义倍率 \(appState.settings.customScale, specifier: "%.1fx")")
                 }
             }
         }
@@ -97,18 +95,18 @@ struct AudioSettingsTab: View {
 
     var body: some View {
         Form {
-            Picker("Output Device", selection: $appState.settings.audioOutputDeviceID) {
-                Text("System Default").tag(String?.none)
+            Picker("输出设备", selection: $appState.settings.audioOutputDeviceID) {
+                Text("系统默认").tag(String?.none)
                 ForEach(appState.deviceManager.audioDevices, id: \.id) { d in
                     Text(d.name).tag(String?.some(d.id))
                 }
             }
             Slider(value: $appState.settings.audioVolume, in: 0...1) {
-                Text("Volume \(Int(appState.settings.audioVolume * 100))%")
+                Text("音量 \(Int(appState.settings.audioVolume * 100))%")
             }
-            Toggle("Mute", isOn: $appState.settings.audioMuted)
+            Toggle("静音", isOn: $appState.settings.audioMuted)
             Slider(value: $appState.settings.audioDelayMs, in: -1000...1000, step: 10) {
-                Text("Audio Delay \(Int(appState.settings.audioDelayMs))ms")
+                Text("音频延迟补偿 \(Int(appState.settings.audioDelayMs))ms")
             }
         }
         .formStyle(.grouped)
@@ -120,10 +118,10 @@ struct DisplaySettingsTab: View {
 
     var body: some View {
         Form {
-            Toggle("VSync", isOn: $appState.settings.vsync)
-            Toggle("Always on Top", isOn: $appState.settings.alwaysOnTop)
-            Picker("Aspect Ratio", selection: $appState.settings.aspectOverride) {
-                ForEach(AspectRatioMode.allCases, id: \.self) { Text($0.displayName).tag($0) }
+            Toggle("垂直同步", isOn: $appState.settings.vsync)
+            Toggle("窗口置顶", isOn: $appState.settings.alwaysOnTop)
+            Picker("宽高比", selection: $appState.settings.aspectOverride) {
+                ForEach(AspectRatioMode.allCases, id: \.self) { Text(a0.displayName).tag(a0) }
             }
         }
         .formStyle(.grouped)
@@ -135,23 +133,23 @@ struct PerformanceSettingsTab: View {
 
     var body: some View {
         Form {
-            Toggle("Performance Overlay", isOn: $appState.settings.showPerformanceOverlay)
-            Toggle("Advanced Metrics", isOn: $appState.settings.overlayAdvancedMetrics)
-            Toggle("Frame Debug", isOn: $appState.settings.showFrameDebug)
+            Toggle("性能悬浮层", isOn: $appState.settings.showPerformanceOverlay)
+            Toggle("高级指标", isOn: $appState.settings.overlayAdvancedMetrics)
+            Toggle("帧调试信息", isOn: $appState.settings.showFrameDebug)
             Slider(value: $appState.settings.spikeThresholdMs, in: 10...60, step: 1) {
-                Text("Spike Threshold \(Int(appState.settings.spikeThresholdMs))ms")
+                Text("帧尖峰阈值 \(Int(appState.settings.spikeThresholdMs))ms")
             }
             Slider(value: $appState.settings.dropThresholdMs, in: 20...100, step: 1) {
-                Text("Drop Threshold \(Int(appState.settings.dropThresholdMs))ms")
+                Text("丢帧判定阈值 \(Int(appState.settings.dropThresholdMs))ms")
             }
             HStack {
-                Button(appState.isRecording ? "Stop Recording" : "Start Recording") {
+                Button(appState.isRecording ? "停止记录" : "开始记录") {
                     appState.toggleRecording()
                 }
-                Button("Export CSV") { appState.exportCSV() }
-                Button("Export JSON") { appState.exportJSON() }
+                Button("导出 CSV…") { appState.exportCSV() }
+                Button("导出 JSON…") { appState.exportJSON() }
             }
-            LabeledContent("Recording Rows") { Text("\(appState.recordingRows)") }
+            LabeledContent("已记录行数") { Text("\(appState.recordingRows)") }
         }
         .formStyle(.grouped)
     }

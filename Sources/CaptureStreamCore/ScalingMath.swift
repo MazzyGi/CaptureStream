@@ -11,12 +11,12 @@ public enum ScalingMode: String, Sendable, CaseIterable, Codable {
 
     public var displayName: String {
         switch self {
-        case .fit: return "Fit"
-        case .fill: return "Fill"
-        case .stretch: return "Stretch"
-        case .pixelPerfect: return "Pixel Perfect (1:1)"
-        case .integer: return "Integer Scaling"
-        case .custom: return "Custom"
+        case .fit: return "适应窗口 (Fit)"
+        case .fill: return "填满裁切 (Fill)"
+        case .stretch: return "拉伸 (Stretch)"
+        case .pixelPerfect: return "点对点 1:1"
+        case .integer: return "整数倍缩放"
+        case .custom: return "自定义"
         }
     }
 }
@@ -35,11 +35,11 @@ public enum AspectRatioMode: String, Sendable, CaseIterable, Codable {
 
     public var displayName: String {
         switch self {
-        case .original: return "Original"
+        case .original: return "原始比例"
         case .ratio16x9: return "16:9"
         case .ratio16x10: return "16:10"
         case .ratio4x3: return "4:3"
-        case .custom: return "Custom"
+        case .custom: return "自定义"
         }
     }
 

@@ -43,6 +43,9 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
 
     public let session = AVCaptureSession()
     private let output = AVCaptureVideoDataOutput()
+    /// session 所有操作（配置/启停/增删 input output）的专属串行队列——
+    /// AVFoundation session 配置非线程安全，跨线程并发操作会静默失败（表现为无帧输出）。
+    public let sessionQueue = DispatchQueue(label: "capture.session", qos: .userInitiated)
     private let queue = DispatchQueue(label: "capture.video", qos: .userInteractive)
     private let frameQueue: BoundedFrameQueue<CapturedFrame>
 
@@ -63,9 +66,19 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
     }
 
     /// 配置并启动。format 为 nil 时选设备默认最优格式。
+    /// 全程在 sessionQueue 串行执行，调用方阻塞等待完成。
     /// 注意：startRunning 必须在 commitConfiguration 之后调用，
     /// 在 begin/commit 窗口内调用会触发 AVFoundation NSException（SIGABRT）。
     public func start(deviceID: String, format: CaptureFormatDescriptor?) throws {
+        var startError: Error?
+        sessionQueue.sync { [self] in
+            do { try configureAndStart(deviceID: deviceID, format: format) }
+            catch { startError = error }
+        }
+        if let e = startError { throw e }
+    }
+
+    private func configureAndStart(deviceID: String, format: CaptureFormatDescriptor?) throws {
         guard permissionGranted() else { throw CaptureSessionError.noPermission }
         guard let device = AVCaptureDevice(uniqueID: deviceID) else {
             throw CaptureSessionError.deviceNotFound(deviceID)
@@ -109,7 +122,7 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
     }
 
     public func stop() {
-        queue.async { [session] in
+        sessionQueue.async { [session] in
             if session.isRunning { session.stopRunning() }
         }
         frameQueue.clear()
