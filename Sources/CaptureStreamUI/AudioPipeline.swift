@@ -187,39 +187,35 @@ public final class AudioPipeline: NSObject, AVCaptureAudioDataOutputSampleBuffer
             blockBufferAllocator: kCFAllocatorDefault,
             blockBufferMemoryAllocator: kCFAllocatorDefault,
             flags: 0, blockBufferOut: &block)
-        guard status == kCMSampleBufferError_AllocationFailed || ablSize > 0 else { return }
-        var listStorage = [AudioBufferList](repeating: AudioBufferList(), count: (ablSize + MemoryLayout<AudioBufferList>.size - 1) / MemoryLayout<AudioBufferList>.size)
-        let got = listStorage.withUnsafeMutableBytes { ptr -> OSStatus in
-            CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
-                sampleBuffer, bufferListSizeNeededOut: nil,
-                bufferListOut: ptr.baseAddress?.assumingMemoryBound(to: AudioBufferList.self),
-                bufferListSize: ablSize,
-                blockBufferAllocator: kCFAllocatorDefault,
-                blockBufferMemoryAllocator: kCFAllocatorDefault,
-                flags: 0, blockBufferOut: &block)
-        }
+        guard status == noErr || ablSize > 0 else { return }
+        let listStorage = UnsafeMutableRawPointer.allocate(byteCount: ablSize, alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { listStorage.deallocate() }
+        let got = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            sampleBuffer, bufferListSizeNeededOut: nil,
+            bufferListOut: listStorage.assumingMemoryBound(to: AudioBufferList.self),
+            bufferListSize: ablSize,
+            blockBufferAllocator: kCFAllocatorDefault,
+            blockBufferMemoryAllocator: kCFAllocatorDefault,
+            flags: 0, blockBufferOut: &block)
         guard got == noErr else { return }
 
         // 提取交织样本 → 环形缓冲
-        var samples: [Float] = []
-        let result = listStorage.withUnsafeMutableBytes { ptr -> [Float] in
-            let list = UnsafeMutableAudioBufferListPointer(ptr.bindMemory(to: AudioBufferList.self))
-            if list.count >= 2 {
-                let a = list[0], b = list[1]
-                guard let pa = a.mData?.assumingMemoryBound(to: Float.self),
-                      let pb = b.mData?.assumingMemoryBound(to: Float.self) else { return [] }
-                let n = min(Int(a.mDataByteSize), Int(b.mDataByteSize)) / MemoryLayout<Float>.size
-                var out = [Float](); out.reserveCapacity(n * 2)
-                for i in 0..<n { out.append(pa[i]); out.append(pb[i]) }
-                return out
-            } else if let first = list.first, let p = first.mData?.assumingMemoryBound(to: Float.self) {
-                let n = Int(first.mDataByteSize) / MemoryLayout<Float>.size
-                return Array(UnsafeBufferPointer(start: p, count: n))
-            }
-            return []
+        let list = UnsafeMutableAudioBufferListPointer(listStorage.assumingMemoryBound(to: AudioBufferList.self))
+        var samples: [Float]
+        if list.count >= 2 {
+            let a = list[0], b = list[1]
+            guard let pa = a.mData?.assumingMemoryBound(to: Float.self),
+                  let pb = b.mData?.assumingMemoryBound(to: Float.self) else { return }
+            let n = min(Int(a.mDataByteSize), Int(b.mDataByteSize)) / MemoryLayout<Float>.size
+            var out = [Float](); out.reserveCapacity(n * 2)
+            for i in 0..<n { out.append(pa[i]); out.append(pb[i]) }
+            samples = out
+        } else if let first = list.first, let p = first.mData?.assumingMemoryBound(to: Float.self) {
+            let n = Int(first.mDataByteSize) / MemoryLayout<Float>.size
+            samples = Array(UnsafeBufferPointer(start: p, count: n))
+        } else {
+            return
         }
-        samples = result
-        guard !samples.isEmpty else { return }
 
         configureRing(sampleRate: sampleRate > 0 ? sampleRate : 48000, channels: 2)
         pushSamples(samples)

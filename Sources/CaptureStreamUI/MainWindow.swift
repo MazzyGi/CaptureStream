@@ -185,19 +185,17 @@ public final class MetalHostView: NSView {
         if let window, let screen = window.screen {
             let scale = screen.backingScaleFactor
             metalLayer.contentsScale = scale
-            let pixel = frame.size * scale
-            metalLayer.drawableSize = CGSize(width: Int(pixel.width), height: Int(pixel.height))
+            metalLayer.drawableSize = CGSize(width: frame.size.width * scale,
+                                             height: frame.size.height * scale)
         }
         appState?.viewportChanged(bounds.size)
     }
 
     public override func layout() {
         super.layout()
-        if let window, let screen = window.screen {
-            let scale = screen.backingScaleFactor
-            let pixel = frame.size * scale
-            metalLayer.drawableSize = CGSize(width: Int(max(pixel.width, 1)), height: Int(max(pixel.height, 1)))
-        }
+        let scale = metalLayer.contentsScale > 0 ? metalLayer.contentsScale : 1
+        metalLayer.drawableSize = CGSize(width: max(frame.size.width * scale, 1),
+                                         height: max(frame.size.height * scale, 1))
         appState?.viewportChanged(bounds.size)
     }
 }

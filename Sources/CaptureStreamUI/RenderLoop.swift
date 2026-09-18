@@ -8,7 +8,7 @@ import CaptureStreamCore
 /// 支持 vsync 驱动（CVDisplayLink）或立即模式（§22 FramePacing）。
 public final class RenderLoop {
 
-    private let thread: Thread
+    private var thread: Thread?
     private let condition = NSCondition()
     private var running = false
     private var stopped = false
@@ -28,10 +28,6 @@ public final class RenderLoop {
 
     public init(renderer: MetalRenderer?) {
         self.renderer = renderer
-        let block: () -> Void = { [weak self] in self?.run() }
-        thread = Thread(block: block)
-        thread.name = "capture.render"
-        thread.qualityOfService = .userInteractive
     }
 
     /// 主线程调用：同步当前设置（渲染线程只读镜像）。
@@ -45,7 +41,11 @@ public final class RenderLoop {
         guard !running else { return }
         running = true
         stopped = false
-        thread.start()
+        let t = Thread { [weak self] in self?.run() }
+        t.name = "capture.render"
+        t.qualityOfService = .userInteractive
+        thread = t
+        t.start()
     }
 
     public func stop() {
