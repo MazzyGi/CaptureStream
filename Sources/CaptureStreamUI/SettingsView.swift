@@ -69,10 +69,10 @@ struct ScalingSettingsTab: View {
     var body: some View {
         Form {
             Picker("缩放模式", selection: $appState.settings.scalingMode) {
-                ForEach(ScalingMode.allCases, id: \.self) { Text(m.displayName).tag(m) }
+                ForEach(ScalingMode.allCases, id: \.self) { m in Text(m.displayName).tag(m) }
             }
             Picker("滤波算法", selection: $appState.settings.scaleFilter) {
-                ForEach(ScaleFilter.allCases, id: \.self) { Text(f.displayName).tag(f) }
+                ForEach(ScaleFilter.allCases, id: \.self) { f in Text(f.displayName).tag(f) }
             }
             Slider(value: $appState.settings.sharpen, in: 0...100, step: 1) {
                 Text("锐化 \(Int(appState.settings.sharpen))")
@@ -121,7 +121,7 @@ struct DisplaySettingsTab: View {
             Toggle("垂直同步", isOn: $appState.settings.vsync)
             Toggle("窗口置顶", isOn: $appState.settings.alwaysOnTop)
             Picker("宽高比", selection: $appState.settings.aspectOverride) {
-                ForEach(AspectRatioMode.allCases, id: \.self) { Text(a.displayName).tag(a) }
+                ForEach(AspectRatioMode.allCases, id: \.self) { a in Text(a.displayName).tag(a) }
             }
         }
         .formStyle(.grouped)
