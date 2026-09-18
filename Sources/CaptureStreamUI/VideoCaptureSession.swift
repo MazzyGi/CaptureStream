@@ -63,34 +63,48 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
     }
 
     /// 配置并启动。format 为 nil 时选设备默认最优格式。
+    /// 注意：startRunning 必须在 commitConfiguration 之后调用，
+    /// 在 begin/commit 窗口内调用会触发 AVFoundation NSException（SIGABRT）。
     public func start(deviceID: String, format: CaptureFormatDescriptor?) throws {
         guard permissionGranted() else { throw CaptureSessionError.noPermission }
         guard let device = AVCaptureDevice(uniqueID: deviceID) else {
             throw CaptureSessionError.deviceNotFound(deviceID)
         }
-        session.beginConfiguration()
-        defer { session.commitConfiguration() }
-        session.inputs.forEach(session.removeInput)
-        session.outputs.forEach(session.removeOutput)
+        do {
+            session.beginConfiguration()
+            // 配置失败也要 commit，否则 session 卡在配置态
+            var configError: CaptureSessionError?
+            do {
+                session.inputs.forEach(session.removeInput)
+                session.outputs.forEach(session.removeOutput)
 
-        guard let input = try? AVCaptureDeviceInput(device: device) else {
-            throw CaptureSessionError.cannotConfigure("cannot create device input")
-        }
-        guard session.canAddInput(input) else {
-            throw CaptureSessionError.cannotConfigure("cannot add input")
-        }
-        session.addInput(input)
+                guard let input = try? AVCaptureDeviceInput(device: device) else {
+                    throw CaptureSessionError.cannotConfigure("cannot create device input")
+                }
+                guard session.canAddInput(input) else {
+                    throw CaptureSessionError.cannotConfigure("cannot add input")
+                }
+                session.addInput(input)
 
-        if let fmt = format {
-            apply(format: fmt, to: device)
-        }
-        currentFormat = activeFormatDescriptor(device)
+                if let fmt = format {
+                    apply(format: fmt, to: device)
+                }
+                currentFormat = activeFormatDescriptor(device)
 
-        guard session.canAddOutput(output) else {
-            throw CaptureSessionError.cannotConfigure("cannot add video output")
+                guard session.canAddOutput(output) else {
+                    throw CaptureSessionError.cannotConfigure("cannot add video output")
+                }
+                session.addOutput(output)
+                configured = true
+            } catch let e as CaptureSessionError {
+                configError = e
+            } catch {
+                configError = .cannotConfigure("\(error)")
+            }
+            session.commitConfiguration()   // 先结束配置窗口
+            if let e = configError { throw e }
         }
-        session.addOutput(output)
-        configured = true
+        // startRunning 在配置窗口之外调用（Apple 文档要求）
         session.startRunning()
     }
 
