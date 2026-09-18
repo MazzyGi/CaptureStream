@@ -122,12 +122,24 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
                 Int($0.maxFrameRate.rounded()) == format.fps
             }
         }) else { return }   // 不支持的组合静默跳过（UI 只列出可用组合，§6）
+
+        // 帧时长必须取自设备报告的 supported range（如 NTSC 59.94 = 1001/60000s）。
+        // 手工构造 1/rounded(fps) 会比设备最快帧率更快，触发 AVFCapture 抛 NSException
+        // （Swift do/catch 接不住 NSException，直接 SIGABRT）。
+        guard let range = match.videoSupportedFrameRateRanges.first(where: {
+            Int($0.maxFrameRate.rounded()) == format.fps
+        }) ?? match.videoSupportedFrameRateRanges.first else { return }
+        // min duration 用 range 的最快值，max duration 用最慢值——两者都必须落在 [minDuration, maxDuration] 内
+        let minDuration = range.minFrameDuration
+        let maxDuration = range.maxFrameDuration > 0 ? range.maxFrameDuration : minDuration
+
         do {
             try device.lockForConfiguration()
             device.activeFormat = match
-            let fps = Double(format.fps)
-            device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: CMTimeScale(fps))
-            device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: CMTimeScale(fps))
+            // 帧时长使用设备报告的原值（59.94 = 1001/60000 这类非整值必须保留），
+            // 与 range 完全一致 → 不会触发 AVFCapture 的 NSException
+            device.activeVideoMinFrameDuration = minDuration
+            device.activeVideoMaxFrameDuration = maxDuration
             device.unlockForConfiguration()
         } catch {
             NSLog("[CaptureStream] format lock failed: \(error)")

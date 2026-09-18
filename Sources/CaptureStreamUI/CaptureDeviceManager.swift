@@ -77,7 +77,8 @@ public final class CaptureDeviceManager: ObservableObject {
             let pf = Self.pixelFormatName(codec)
             for range in f.videoSupportedFrameRateRanges {
                 guard range.maxFrameRate > 0 else { continue }
-                // 帧率取整数挡位（UVC 通常 30/60）
+                // 连续区间（min~max）只取 max 挡位；UVC 常见离散挡 30/60 由此覆盖。
+                // NTSC 59.94 显示为 60（内部应用时用设备报告的原 duration）。
                 let fps = Int(range.maxFrameRate.rounded())
                 guard fps > 0 else { continue }
                 let key = "\(dims.width)x\(dims.height)x\(fps)x\(pf)"
