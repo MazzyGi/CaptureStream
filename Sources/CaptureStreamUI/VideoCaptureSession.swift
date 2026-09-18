@@ -129,9 +129,10 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
         guard let range = match.videoSupportedFrameRateRanges.first(where: {
             Int($0.maxFrameRate.rounded()) == format.fps
         }) ?? match.videoSupportedFrameRateRanges.first else { return }
-        // min duration 用 range 的最快值，max duration 用最慢值——两者都必须落在 [minDuration, maxDuration] 内
+        // min duration = range 最快（含 NTSC 1001/60000）；max duration 取同区间最慢，
+        // 无效时退回 min（锁定制率）
         let minDuration = range.minFrameDuration
-        let maxDuration = range.maxFrameDuration > 0 ? range.maxFrameDuration : minDuration
+        let maxDuration = range.maxFrameDuration.isValid ? range.maxFrameDuration : minDuration
 
         do {
             try device.lockForConfiguration()
