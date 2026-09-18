@@ -101,11 +101,10 @@ public final class RenderLoop {
     }
 
     private func viewportPixels() -> Size {
-        if let layer, let win = layer.window, let screen = win.screen {
-            let backing = screen.backingScaleFactor
-            // drawableSize 已是像素；Pixel Perfect 依赖它（Retina 下 1:1 显示像素）
-            return Size(width: Int(layer.drawableSize.width * (layer.contentsScale > 1 ? 1 : backing)),
-                        height: Int(layer.drawableSize.height * (layer.contentsScale > 1 ? 1 : backing)))
+        if let layer {
+            // drawableSize 已是物理像素（CAMetalLayer 语义），Pixel Perfect 依赖它
+            return Size(width: Int(max(layer.drawableSize.width, 1)),
+                        height: Int(max(layer.drawableSize.height, 1)))
         }
         return viewportSize
     }

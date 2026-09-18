@@ -1,5 +1,6 @@
 #if canImport(Metal) && canImport(CoreVideo)
 import CoreVideo
+import QuartzCore
 import Foundation
 import Metal
 import CaptureStreamCore
