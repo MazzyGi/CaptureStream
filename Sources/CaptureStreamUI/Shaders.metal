@@ -188,16 +188,18 @@ fragment float4 fragmentLanczos(BlitVertexOut in [[stage_in]],
 
 // ---------- Sharpen（unsharp mask，compute 后处理）----------
 
-kernel void sharpenKernel(texture2d<float> src [[texture(0)]],
-                          texture2d<float> dst [[texture(1)]],
+kernel void sharpenKernel(texture2d<float, access::read> src [[texture(0)]],
+                          texture2d<float, access::write> dst [[texture(1)]],
                           constant float &amount [[buffer(0)]],
                           uint2 gid [[thread_position_in_grid]]) {
     if (gid.x >= src.get_width() || gid.y >= src.get_height()) return;
+    int2 p = int2(gid);
+    int2 maxp = int2(int(src.get_width()) - 1, int(src.get_height()) - 1);
     float4 c = src.read(gid);
-    float4 blur = (src.read(clamp(gid + int2(-1, 0), uint2(0), uint2(src.get_width() - 1, src.get_height() - 1))) +
-                   src.read(clamp(gid + int2(1, 0), uint2(0), uint2(src.get_width() - 1, src.get_height() - 1))) +
-                   src.read(clamp(gid + int2(0, -1), uint2(0), uint2(src.get_width() - 1, src.get_height() - 1))) +
-                   src.read(clamp(gid + int2(0, 1), uint2(0), uint2(src.get_width() - 1, src.get_height() - 1)))) * 0.25;
+    float4 blur = (src.read(uint2(clamp(p + int2(-1, 0), int2(0), maxp))) +
+                   src.read(uint2(clamp(p + int2(1, 0), int2(0), maxp))) +
+                   src.read(uint2(clamp(p + int2(0, -1), int2(0), maxp))) +
+                   src.read(uint2(clamp(p + int2(0, 1), int2(0), maxp)))) * 0.25;
     float4 sharp = c + (c - blur) * amount;
     dst.write(clamp(sharp, 0.0, 1.0), gid);
 }
