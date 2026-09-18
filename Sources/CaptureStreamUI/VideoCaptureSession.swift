@@ -39,7 +39,7 @@ public enum CaptureSessionError: Error, CustomStringConvertible {
 ///   采集卡自身的丢帧表现为"时间戳间隔异常"，ID 连续（与设备内部序列无关）。
 /// - 真正的设备序列缺失由 iOS 26 / macOS 26 AVCaptureInput 的 sequence number API 检测，
 ///   当前 SDK 不可用时退化为时间戳间隔检测（PerformanceMonitor 已实现）。
-public final class VideoCaptureSession {
+public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
 
     public let session = AVCaptureSession()
     private let output = AVCaptureVideoDataOutput()
@@ -55,6 +55,7 @@ public final class VideoCaptureSession {
 
     public init(frameQueueCapacity: Int = 2,
                 policy: BoundedFrameQueue<Int>.OverflowPolicy = .dropOldest) {
+        super.init()
         frameQueue = BoundedFrameQueue<CapturedFrame>(capacity: frameQueueCapacity, policy: policy)
         output.videoSettings = [:]   // 原生格式输出，不做 CPU 转换（§5）
         output.alwaysDiscardsLateVideoFrames = true   // 低延迟：晚帧直接丢（§22）
@@ -157,9 +158,8 @@ public final class VideoCaptureSession {
         default: return false
         }
     }
-}
 
-extension VideoCaptureSession: AVCaptureVideoDataOutputSampleBufferDelegate {
+    // MARK: - AVCaptureVideoDataOutputSampleBufferDelegate
 
     public func captureOutput(_ output: AVCaptureOutput,
                               didOutput sampleBuffer: CMSampleBuffer,

@@ -5,7 +5,7 @@ import CaptureStreamCore
 
 /// 音频管线：采集卡 HDMI 音频（AVCaptureDevice audio）→ AVAudioEngine 播放。
 /// 音频延迟（§21 A/V Sync 手动补偿）通过环形缓冲偏移实现。
-public final class AudioPipeline {
+public final class AudioPipeline: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
 
     public struct Config {
         public var outputDeviceID: String?
@@ -26,7 +26,6 @@ public final class AudioPipeline {
 
     // 播放侧
     private var playerNode: AVAudioPlayerNode?
-    private var srcFormat: AVAudioFormat?
     private var mixerTapInstalled = false
     private let ringLock = NSLock()
     private var ring: [Float] = []       // 交织 L/R
@@ -41,6 +40,7 @@ public final class AudioPipeline {
     private var lastAudioCapturedAt: Double = 0
 
     public init(config: Config) {
+        super.init()
         self.config = config
     }
 
@@ -108,13 +108,8 @@ public final class AudioPipeline {
     }
 
     private func scheduleSilencePrimer() {
-        guard let node = playerNode, let format = srcFormat ?? engine.mainMixerNode.outputFormat(forBus: 0) else { return }
-        if let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1024) {
-            buf.frameLength = 1024
-            node.scheduleBuffer(buf, at: nil, options: .loops, completionHandler: nil)
-        }
-        _ = node
-        // 实际使用中由 tap 驱动，见 installTap
+        // playerNode 由采集回调直接 scheduleBuffer 驱动；此处不预置静音 buffer
+        // （预置 .loops buffer 会阻止后续 schedule 交替，改为采集数据直接排队）
     }
 
     public func stopPlayback() {
@@ -173,44 +168,67 @@ public final class AudioPipeline {
         }
         return out
     }
-}
 
-extension AudioPipeline: AVCaptureAudioDataOutputSampleBufferDelegate {
+    // MARK: - AVCaptureAudioDataOutputSampleBufferDelegate
+
     public func captureOutput(_ output: AVCaptureOutput,
                               didOutput sampleBuffer: CMSampleBuffer,
                               from connection: AVCaptureConnection) {
-        guard let pcm = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(sampleBuffer,
-                bufferListSizeNeededOut: nil)?.bufferList else { return }
+        guard let asbd = CMSampleBufferGetFormatDescription(sampleBuffer)
+            .flatMap({ CMAudioFormatDescriptionGetStreamBasicDescription($0) }) else { return }
+        let sampleRate = asbd.pointee.mSampleRate
         lastAudioCapturedAt = CFAbsoluteTimeGetCurrent()
+
+        var ablSize = 0
+        var block: CMBlockBuffer?
+        let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            sampleBuffer, bufferListSizeNeededOut: &ablSize,
+            bufferListOut: nil, bufferListSize: 0,
+            blockBufferAllocator: kCFAllocatorDefault,
+            blockBufferMemoryAllocator: kCFAllocatorDefault,
+            flags: 0, blockBufferOut: &block)
+        guard status == kCMSampleBufferError_AllocationFailed || ablSize > 0 else { return }
+        var listStorage = [AudioBufferList](repeating: AudioBufferList(), count: (ablSize + MemoryLayout<AudioBufferList>.size - 1) / MemoryLayout<AudioBufferList>.size)
+        let got = listStorage.withUnsafeMutableBytes { ptr -> OSStatus in
+            CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+                sampleBuffer, bufferListSizeNeededOut: nil,
+                bufferListOut: ptr.baseAddress?.assumingMemoryBound(to: AudioBufferList.self),
+                bufferListSize: ablSize,
+                blockBufferAllocator: kCFAllocatorDefault,
+                blockBufferMemoryAllocator: kCFAllocatorDefault,
+                flags: 0, blockBufferOut: &block)
+        }
+        guard got == noErr else { return }
 
         // 提取交织样本 → 环形缓冲
         var samples: [Float] = []
-        var list = UnsafeMutableAudioBufferListPointer(pcm)
-        let chans = list.count
-        if chans == 2 {
-            // 双 buffer（非交织）→ 交织
-            let a = list[0], b = list[1]
-            guard let pa = a.mData?.assumingMemoryBound(to: Float.self),
-                  let pb = b.mData?.assumingMemoryBound(to: Float.self) else { return }
-            let n = Int(a.mDataByteSize) / MemoryLayout<Float>.size
-            samples.reserveCapacity(n * 2)
-            for i in 0..<n {
-                samples.append(pa[i]); samples.append(pb[i])
+        let result = listStorage.withUnsafeMutableBytes { ptr -> [Float] in
+            let list = UnsafeMutableAudioBufferListPointer(ptr.bindMemory(to: AudioBufferList.self))
+            if list.count >= 2 {
+                let a = list[0], b = list[1]
+                guard let pa = a.mData?.assumingMemoryBound(to: Float.self),
+                      let pb = b.mData?.assumingMemoryBound(to: Float.self) else { return [] }
+                let n = min(Int(a.mDataByteSize), Int(b.mDataByteSize)) / MemoryLayout<Float>.size
+                var out = [Float](); out.reserveCapacity(n * 2)
+                for i in 0..<n { out.append(pa[i]); out.append(pb[i]) }
+                return out
+            } else if let first = list.first, let p = first.mData?.assumingMemoryBound(to: Float.self) {
+                let n = Int(first.mDataByteSize) / MemoryLayout<Float>.size
+                return Array(UnsafeBufferPointer(start: p, count: n))
             }
-        } else if chans == 1, let p = list[0].mData?.assumingMemoryBound(to: Float.self) {
-            let n = Int(list[0].mDataByteSize) / MemoryLayout<Float>.size
-            samples = Array(UnsafeBufferPointer(start: p, count: n))
+            return []
         }
-        _ = list
-        configureRing(sampleRate: 48000, channels: 2)
+        samples = result
+        guard !samples.isEmpty else { return }
+
+        configureRing(sampleRate: sampleRate > 0 ? sampleRate : 48000, channels: 2)
         pushSamples(samples)
 
         // 播放：拉取延迟后的数据装进 playerNode
-        if let node = playerNode, !samples.isEmpty {
+        if let node = playerNode {
             let delayed = pullSamples(samples.count)
-            let fmt = srcFormat ?? AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
-            srcFormat = fmt
-            if let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(delayed.count / 2)) {
+            if let fmt = AVAudioFormat(standardFormatWithSampleRate: sampleRate > 0 ? sampleRate : 48000, channels: 2),
+               let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(delayed.count / 2)) {
                 buf.frameLength = AVAudioFrameCount(delayed.count / 2)
                 if let l = buf.floatChannelData?[0], let r = buf.floatChannelData?[1] {
                     for i in 0..<Int(buf.frameLength) {

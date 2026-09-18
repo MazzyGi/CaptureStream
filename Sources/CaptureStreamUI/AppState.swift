@@ -15,7 +15,7 @@ public final class AppState: ObservableObject {
 
     // MARK: - Published（UI）
 
-    @Published public var settings: AppSettings { didSet { persist(&settings) } }
+    @Published public var settings: AppSettings { didSet { persist(settings) } }
     @Published public var selectedDeviceID: String? { didSet { onSelectionChanged() } }
     @Published public var selectedFormatLabel: String? { didSet { onSelectionChanged() } }
     @Published public var isRunning = false { didSet { onRunChanged() } }

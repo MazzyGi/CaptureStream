@@ -28,7 +28,8 @@ public final class RenderLoop {
 
     public init(renderer: MetalRenderer?) {
         self.renderer = renderer
-        thread = Thread(block: { [weak self] in self?.run() })
+        let block: () -> Void = { [weak self] in self?.run() }
+        thread = Thread(block: block)
         thread.name = "capture.render"
         thread.qualityOfService = .userInteractive
     }
