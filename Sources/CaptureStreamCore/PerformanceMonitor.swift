@@ -237,6 +237,12 @@ public final class PerformanceMonitor: @unchecked Sendable {
         recording = false
     }
 
+    /// 当前录制的快照行数（UI 显示）。
+    public var recordingRowCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return csvRows.count
+    }
+
     /// 以固定频率记录快照（由 UI timer 5-10Hz 驱动，非每帧）。
     public func tickRecord(t: Double) {
         lock.lock()
