@@ -7,6 +7,10 @@ import CaptureStreamCore
 public struct MainWindow: View {
     @ObservedObject var appState: AppState
 
+    public init(appState: AppState) {
+        self.appState = appState
+    }
+
     public var body: some View {
         VStack(spacing: 0) {
             if !appState.isFullscreen {
