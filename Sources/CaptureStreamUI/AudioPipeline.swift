@@ -40,8 +40,8 @@ public final class AudioPipeline: NSObject, AVCaptureAudioDataOutputSampleBuffer
     private var lastAudioCapturedAt: Double = 0
 
     public init(config: Config) {
-        super.init()
         self.config = config
+        super.init()
     }
 
     public func updateConfig(_ new: Config) {

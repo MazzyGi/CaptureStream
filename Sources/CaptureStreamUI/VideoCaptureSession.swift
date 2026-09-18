@@ -55,8 +55,8 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
 
     public init(frameQueueCapacity: Int = 2,
                 policy: QueueOverflowPolicy = .dropOldest) {
-        super.init()
         frameQueue = BoundedFrameQueue<CapturedFrame>(capacity: frameQueueCapacity, policy: policy)
+        super.init()
         output.videoSettings = [:]   // 原生格式输出，不做 CPU 转换（§5）
         output.alwaysDiscardsLateVideoFrames = true   // 低延迟：晚帧直接丢（§22）
         output.setSampleBufferDelegate(self, queue: queue)
