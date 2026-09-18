@@ -1,0 +1,294 @@
+#if canImport(AVFoundation) && canImport(CoreVideo) && canImport(CoreMedia)
+import AVFoundation
+import CoreFoundation
+import CoreMedia
+import CoreVideo
+import Foundation
+import CaptureStreamCore
+
+/// 采集输出的帧包装：CVPixelBuffer + 元数据。
+public struct CapturedFrame {
+    public let pixelBuffer: CVPixelBuffer
+    public let trace: FrameTrace
+    public init(pixelBuffer: CVPixelBuffer, trace: FrameTrace) {
+        self.pixelBuffer = pixelBuffer
+        self.trace = trace
+    }
+}
+
+public enum CaptureSessionError: Error, CustomStringConvertible {
+    case noPermission
+    case deviceNotFound(String)
+    case cannotConfigure(String)
+    case cannotStart(String)
+    case disconnected(String)
+
+    public var description: String {
+        switch self {
+        case .noPermission: return "Camera permission denied (System Settings → Privacy → Camera)"
+        case .deviceNotFound(let id): return "Capture device not found: \(id)"
+        case .cannotConfigure(let m): return "Cannot configure capture session: \(m)"
+        case .cannotStart(let m): return "Cannot start capture session: \(m)"
+        case .disconnected(let m): return "Capture device disconnected: \(m)"
+        }
+    }
+}
+
+/// 视频采集会话：AVCaptureSession → 有界队列 → 渲染线程。
+/// - 帧序列号（frameID）由本类维护：每个 output 回调 +1，
+///   采集卡自身的丢帧表现为"时间戳间隔异常"，ID 连续（与设备内部序列无关）。
+/// - 真正的设备序列缺失由 iOS 26 / macOS 26 AVCaptureInput 的 sequence number API 检测，
+///   当前 SDK 不可用时退化为时间戳间隔检测（PerformanceMonitor 已实现）。
+public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+
+    public let session = AVCaptureSession()
+    private let output = AVCaptureVideoDataOutput()
+    /// session 所有操作（配置/启停/增删 input output）的专属串行队列——
+    /// AVFoundation session 配置非线程安全，跨线程并发操作会静默失败（表现为无帧输出）。
+    public let sessionQueue = DispatchQueue(label: "capture.session", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "capture.video", qos: .userInteractive)
+    private let frameQueue: BoundedFrameQueue<CapturedFrame>
+
+    public private(set) var currentFormat: CaptureFormatDescriptor?
+    public var monitor: PerformanceMonitor?
+
+    private var frameCounter: UInt64 = 0
+    private let idLock = NSLock()
+    private var configured = false
+
+    /// 诊断：output 回调实际收到的帧数（FPS=0 时判断采集层是否供帧）。
+    public private(set) var callbackFrameCount: UInt64 = 0
+
+    public init(frameQueueCapacity: Int = 2,
+                policy: QueueOverflowPolicy = .dropOldest) {
+        frameQueue = BoundedFrameQueue<CapturedFrame>(capacity: frameQueueCapacity, policy: policy)
+        super.init()
+        output.videoSettings = [:]   // 原生格式输出，不做 CPU 转换（§5）
+        output.alwaysDiscardsLateVideoFrames = true   // 低延迟：晚帧直接丢（§22）
+        output.setSampleBufferDelegate(self, queue: queue)
+    }
+
+    /// 配置并启动。format 为 nil 时选设备默认最优格式。
+    /// 全程在 sessionQueue 串行执行，调用方阻塞等待完成。
+    /// 注意：startRunning 必须在 commitConfiguration 之后调用，
+    /// 在 begin/commit 窗口内调用会触发 AVFoundation NSException（SIGABRT）。
+    public func start(deviceID: String, format: CaptureFormatDescriptor?) throws {
+        var startError: Error?
+        sessionQueue.sync { [self] in
+            do { try configureAndStart(deviceID: deviceID, format: format) }
+            catch { startError = error }
+        }
+        if let e = startError { throw e }
+    }
+
+    private func configureAndStart(deviceID: String, format: CaptureFormatDescriptor?) throws {
+        guard permissionGranted() else { throw CaptureSessionError.noPermission }
+        guard let device = AVCaptureDevice(uniqueID: deviceID) else {
+            throw CaptureSessionError.deviceNotFound(deviceID)
+        }
+        do {
+            session.beginConfiguration()
+            // 配置失败也要 commit，否则 session 卡在配置态
+            var configError: CaptureSessionError?
+            do {
+                session.inputs.forEach(session.removeInput)
+                session.outputs.forEach(session.removeOutput)
+
+                guard let input = try? AVCaptureDeviceInput(device: device) else {
+                    throw CaptureSessionError.cannotConfigure("cannot create device input")
+                }
+                guard session.canAddInput(input) else {
+                    throw CaptureSessionError.cannotConfigure("cannot add input")
+                }
+                session.addInput(input)
+
+                if let fmt = format {
+                    apply(format: fmt, to: device)
+                } else {
+                    // 无显式格式时也要强制最优：设备出厂 activeFormat 常为低帧率
+                    // （UVC 默认可能 30fps 甚至更低），选最大分辨率下最高帧率并应用
+                    if let best = Self.bestFormat(for: device) {
+                        apply(format: best, to: device)
+                    }
+                }
+                currentFormat = activeFormatDescriptor(device)
+
+                guard session.canAddOutput(output) else {
+                    throw CaptureSessionError.cannotConfigure("cannot add video output")
+                }
+                session.addOutput(output)
+                configured = true
+            } catch let e as CaptureSessionError {
+                configError = e
+            } catch {
+                configError = .cannotConfigure("\(error)")
+            }
+            session.commitConfiguration()   // 先结束配置窗口
+            if let e = configError { throw e }
+        }
+        // startRunning 在配置窗口之外调用（Apple 文档要求）
+        session.startRunning()
+    }
+
+    /// 面积最大的分辨率下帧率最高的组合（默认格式选择）。
+    nonisolated static func bestFormat(for device: AVCaptureDevice) -> CaptureFormatDescriptor? {
+        var best: (area: Int, fps: Int, fmt: CaptureFormatDescriptor)?
+        for f in device.formats {
+            let dims = CMVideoFormatDescriptionGetDimensions(f.formatDescription)
+            guard dims.width > 0, dims.height > 0 else { continue }
+            let codec = CMFormatDescriptionGetMediaSubType(f.formatDescription)
+            let pf = CaptureDeviceManager.pixelFormatName(codec)
+            for range in f.videoSupportedFrameRateRanges {
+                let fps = Int(range.maxFrameRate.rounded())
+                guard fps > 0 else { continue }
+                let area = Int(dims.width) * Int(dims.height)
+                if best == nil || area > best!.area || (area == best!.area && fps > best!.fps) {
+                    best = (area, fps, CaptureFormatDescriptor(width: Int(dims.width),
+                                                                height: Int(dims.height),
+                                                                fps: fps, pixelFormat: pf))
+                }
+            }
+        }
+        return best?.fmt
+    }
+
+    public func stop() {
+        sessionQueue.async { [session] in
+            if session.isRunning { session.stopRunning() }
+        }
+        frameQueue.clear()
+        configured = false
+    }
+
+    /// 阻塞取帧（渲染线程调用）。
+    public func nextFrame(timeout: Double? = nil) -> CapturedFrame? {
+        frameQueue.pop(timeout: timeout)
+    }
+
+    public var pendingFrames: Int { frameQueue.count }
+    public var queueOverflowCount: Int { frameQueue.overflowCount }
+
+    // MARK: - 格式切换（分辨率/FPS/像素格式，§6）
+
+    private func apply(format: CaptureFormatDescriptor, to device: AVCaptureDevice) {
+        // 匹配顺序：完全匹配 → 放宽像素格式 → 放宽帧率。绝不静默放弃——
+        // 放弃会让设备停留出厂低帧率（4K 设备默认可能只有 25fps）。
+        let match = device.formats.first { f in
+            Self.matches(f, width: format.width, height: format.height,
+                         fps: format.fps, pixelFormat: format.pixelFormat)
+        } ?? device.formats.first { f in
+            Self.matches(f, width: format.width, height: format.height,
+                         fps: format.fps, pixelFormat: nil)
+        } ?? device.formats.first { f in
+            Self.matches(f, width: format.width, height: format.height,
+                         fps: nil, pixelFormat: nil)
+        }
+        guard let match else {
+            NSLog("[CaptureStream] no device format for \(format.label), keeping current")
+            return
+        }
+
+        // 帧率锁定 min=max=目标时长：
+        // - 目标 fps 在设备区间内 → 构造精确时长（timescale 600000 整除 59.94/29.97 类）
+        // - 目标快于设备最快 → 钳到设备报告的最快值（NSException 保护）
+        let desiredSec = 1.0 / Double(max(format.fps, 1))
+        var targetDuration = CMTime(seconds: desiredSec, preferredTimescale: 600_000)
+        for r in match.videoSupportedFrameRateRanges where r.minFrameDuration.isValid {
+            let fastestSec = Double(r.minFrameDuration.value) / Double(r.minFrameDuration.timescale)
+            if desiredSec < fastestSec {
+                targetDuration = r.minFrameDuration   // 钳位到设备最快（保留 NTSC 原值）
+                break
+            }
+        }
+
+        do {
+            try device.lockForConfiguration()
+            device.activeFormat = match
+            device.activeVideoMinFrameDuration = targetDuration
+            device.activeVideoMaxFrameDuration = targetDuration
+            device.unlockForConfiguration()
+            NSLog("[CaptureStream] applied %@ @ %.4fs (%.2ffps)", Self.describe(match),
+                  targetDuration.seconds, 1.0 / targetDuration.seconds)
+        } catch {
+            NSLog("[CaptureStream] format lock failed: \(error)")
+        }
+    }
+
+    /// 格式匹配谓词（nil = 放宽该维度）。
+    nonisolated static func matches(_ f: AVCaptureDevice.Format,
+                                    width: Int, height: Int,
+                                    fps: Int?, pixelFormat: String?) -> Bool {
+        let dims = CMVideoFormatDescriptionGetDimensions(f.formatDescription)
+        guard Int(dims.width) == width, Int(dims.height) == height else { return false }
+        if let pf = pixelFormat {
+            let codec = CMFormatDescriptionGetMediaSubType(f.formatDescription)
+            guard CaptureDeviceManager.pixelFormatName(codec) == pf else { return false }
+        }
+        if let fps {
+            return f.videoSupportedFrameRateRanges.contains {
+                $0.maxFrameRate >= Double(fps) - 0.5 && $0.minFrameRate <= Double(fps) + 0.5
+            }
+        }
+        return true
+    }
+
+    nonisolated static func describe(_ f: AVCaptureDevice.Format) -> String {
+        let dims = CMVideoFormatDescriptionGetDimensions(f.formatDescription)
+        let codec = CMFormatDescriptionGetMediaSubType(f.formatDescription)
+        return "\(dims.width)x\(dims.height) \(CaptureDeviceManager.pixelFormatName(codec))"
+    }
+
+    private func activeFormatDescriptor(_ device: AVCaptureDevice) -> CaptureFormatDescriptor {
+        let dims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+        let codec = CMFormatDescriptionGetMediaSubType(device.activeFormat.formatDescription)
+        var fps = 0
+        if let r = device.activeFormat.videoSupportedFrameRateRanges.first,
+           device.activeVideoMinFrameDuration.isValid {
+            fps = Int((1.0 / Double(device.activeVideoMinFrameDuration.value) * Double(device.activeVideoMinFrameDuration.timescale)).rounded())
+            _ = r
+        }
+        return CaptureFormatDescriptor(width: Int(dims.width), height: Int(dims.height),
+                                       fps: max(fps, 0), pixelFormat: CaptureDeviceManager.pixelFormatName(codec))
+    }
+
+    private func permissionGranted() -> Bool {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized: return true
+        case .notDetermined:
+            let sema = DispatchSemaphore(value: 0)
+            AVCaptureDevice.requestAccess(for: .video) { _ in sema.signal() }
+            return sema.wait(timeout: .now() + 30) == .success
+        default: return false
+        }
+    }
+
+    // MARK: - AVCaptureVideoDataOutputSampleBufferDelegate
+
+    public func captureOutput(_ output: AVCaptureOutput,
+                              didOutput sampleBuffer: CMSampleBuffer,
+                              from connection: AVCaptureConnection) {
+        guard configured else { return }
+        guard let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        let now = CFAbsoluteTimeGetCurrent()
+        idLock.lock()
+        frameCounter += 1
+        let id = frameCounter
+        callbackFrameCount = frameCounter
+        idLock.unlock()
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).value
+        var trace = monitor?.recordCapture(frameID: id, at: now, pts: pts) ??
+                    FrameTrace(frameID: id, pts: pts, capturedAt: now)
+        trace.capturedAt = now
+        // capture → decode 直通（UVC 无解码），同线程标记
+        monitor?.recordDecode(&trace, at: now)
+        frameQueue.push(CapturedFrame(pixelBuffer: pb, trace: trace))
+    }
+
+    public func captureOutput(_ output: AVCaptureOutput,
+                              didDrop sampleBuffer: CMSampleBuffer,
+                              from connection: AVCaptureConnection) {
+        // AVCaptureVideoDataOutput 丢弃晚帧：transport/queue 级丢帧（§16）
+        monitor?.noteAVFoundationDrop(at: CFAbsoluteTimeGetCurrent())
+    }
+}
+#endif
