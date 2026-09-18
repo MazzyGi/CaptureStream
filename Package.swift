@@ -17,7 +17,10 @@ let package = Package(
         .target(
             name: "CaptureStreamUI",
             dependencies: ["CaptureStreamCore"],
-            path: "Sources/CaptureStreamUI"
+            path: "Sources/CaptureStreamUI",
+            resources: [
+                .process("Shaders.metal")
+            ]
         ),
         .executableTarget(
             name: "CaptureStreamApp",

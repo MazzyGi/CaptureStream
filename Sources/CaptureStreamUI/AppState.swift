@@ -16,8 +16,8 @@ public final class AppState: ObservableObject {
     // MARK: - Published（UI）
 
     @Published public var settings: AppSettings { didSet { persist(settings) } }
-    @Published public var selectedDeviceID: String? { didSet { onSelectionChanged() } }
-    @Published public var selectedFormatLabel: String? { didSet { onSelectionChanged() } }
+    @Published public var selectedDeviceID: String? { didSet { onDevicePicked() } }
+    @Published public var selectedFormatLabel: String? { didSet { onFormatPicked() } }
     @Published public var isRunning = false { didSet { onRunChanged() } }
     @Published public var isFullscreen = false { didSet { onFullscreenChanged() } }
     @Published public var showSettings = false
@@ -105,14 +105,45 @@ public final class AppState: ObservableObject {
         renderLoop?.updateViewport(Size(width: Int(pointSize.width), height: Int(pointSize.height)))
     }
 
-    private func onSelectionChanged() {
+    /// 设备变化：格式立即联动默认值（避免停留在不匹配的旧格式）。
+    private func onDevicePicked() {
         settings.lastDeviceID = selectedDeviceID
-        if let label = selectedFormatLabel,
-           let id = selectedDeviceID,
-           let d = deviceManager.device(withID: id),
-           let f = d.formats.first(where: { $0.label == label }) {
-            settings.format = f
+        guard let id = selectedDeviceID else {
+            selectedFormatLabel = nil
+            settings.format = nil
+            if isRunning { isRunning = false }
+            return
         }
+        if id == Self.testPatternID {
+            let f = CaptureFormatDescriptor(width: 1920, height: 1080, fps: 60, pixelFormat: "NV12 (video)")
+            settings.format = f
+            selectedFormatLabel = f.label
+        } else if let d = deviceManager.device(withID: id) {
+            // 已选格式仍属于该设备 → 保留；否则取默认（最大面积，偏好 ≥50fps 与 NV12）
+            let keep = selectedFormatLabel.flatMap { label in d.formats.first { $0.label == label } }
+            if let keep {
+                settings.format = keep
+            } else {
+                let best = d.formats.first(where: { $0.fps >= 50 && $0.pixelFormat.contains("NV12") })
+                    ?? d.formats.first(where: { $0.fps >= 50 })
+                    ?? d.formats.first
+                settings.format = best
+                selectedFormatLabel = best?.label   // 触发 onFormatPicked（无副作用，见下）
+            }
+        }
+        if isRunning { restartPipeline() }
+    }
+
+    /// 格式变化：只更新持久化，不重启（设备变化路径统一由 onDevicePicked 处理重启）。
+    private func onFormatPicked() {
+        guard let id = selectedDeviceID, id != Self.testPatternID,
+              let d = deviceManager.device(withID: id),
+              let label = selectedFormatLabel,
+              let f = d.formats.first(where: { $0.label == label }) else {
+            if selectedFormatLabel == nil { settings.format = nil }
+            return
+        }
+        settings.format = f
         if isRunning { restartPipeline() }
     }
 
@@ -130,7 +161,7 @@ public final class AppState: ObservableObject {
         errorMessage = nil
         monitor.reset()
         guard let layer = metalLayer else { return }
-        layer.maximumDrawableCount = settings.frameBufferCount
+        layer.maximumDrawableCount = max(2, min(3, settings.frameBufferCount))   // CAMetalLayer 支持 2-4
 
         if selectedDeviceID == Self.testPatternID {
             sourceKind = .testPattern
@@ -144,6 +175,7 @@ public final class AppState: ObservableObject {
             monitor.targetFPS = 60
             monitor.currentResolution = Size(width: 1920, height: 1080)
             monitor.currentFormat = "NV12"
+            startRenderLoopAndTimers()
         } else {
             guard let deviceID = selectedDeviceID else {
                 errorMessage = "No capture device selected"
@@ -152,38 +184,53 @@ public final class AppState: ObservableObject {
             }
             sourceKind = .device
             let format = settings.format
-            let session = VideoCaptureSession(frameQueueCapacity: settings.latencyMode.recommendedQueueCapacity,
-                                              policy: settings.latencyMode.recommendedPolicy)
-            session.monitor = monitor
-            do {
-                try session.start(deviceID: deviceID, format: format)
-            } catch {
-                errorMessage = "\(error)"
-                isRunning = false
-                scheduleReconnect()
-                return
-            }
-            captureSession = session
-            activeFormat = session.currentFormat
-            if let f = session.currentFormat {
-                monitor.targetFPS = Double(f.fps)
-                monitor.currentResolution = Size(width: f.width, height: f.height)
-                monitor.currentFormat = f.pixelFormat
-            }
-            // 音频
-            if settings.audioOutputDeviceID != nil || !settings.audioMuted {
-                let ap = AudioPipeline(config: AudioPipeline.Config(
-                    outputDeviceID: settings.audioOutputDeviceID,
-                    volume: settings.audioVolume,
-                    muted: settings.audioMuted,
-                    delayMs: settings.audioDelayMs))
-                try? ap.startPlayback()
-                ap.attach(to: session.session, deviceID: audioInputDeviceID(for: deviceID))
-                audio = ap
+            let capacity = settings.latencyMode.recommendedQueueCapacity
+            let policy = settings.latencyMode.recommendedPolicy
+            // startRunning 可能阻塞数百毫秒（含权限弹窗），移出主线程避免 UI 卡死
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self else { return }
+                let session = VideoCaptureSession(frameQueueCapacity: capacity, policy: policy)
+                session.monitor = self.monitor
+                do {
+                    try session.start(deviceID: deviceID, format: format)
+                } catch {
+                    Task { @MainActor in
+                        self.errorMessage = "\(error)"
+                        self.isRunning = false
+                        self.scheduleReconnect()
+                    }
+                    return
+                }
+                Task { @MainActor in
+                    guard self.isRunning else {
+                        session.stop()   // 等待期间用户已 Stop
+                        return
+                    }
+                    self.captureSession = session
+                    self.activeFormat = session.currentFormat
+                    if let f = session.currentFormat {
+                        self.monitor.targetFPS = Double(f.fps)
+                        self.monitor.currentResolution = Size(width: f.width, height: f.height)
+                        self.monitor.currentFormat = f.pixelFormat
+                    }
+                    // 音频
+                    if self.settings.audioOutputDeviceID != nil || !self.settings.audioMuted {
+                        let ap = AudioPipeline(config: AudioPipeline.Config(
+                            outputDeviceID: self.settings.audioOutputDeviceID,
+                            volume: self.settings.audioVolume,
+                            muted: self.settings.audioMuted,
+                            delayMs: self.settings.audioDelayMs))
+                        try? ap.startPlayback()
+                        ap.attach(to: session.session, deviceID: self.audioInputDeviceID(for: deviceID))
+                        self.audio = ap
+                    }
+                    self.startRenderLoopAndTimers()
+                }
             }
         }
+    }
 
-        // 渲染循环（设置通过镜像同步，避免渲染线程跨 MainActor 读取）
+    private func startRenderLoopAndTimers() {
         let s = settings
         let loop = RenderLoop(renderer: renderer)
         loop.capture = captureSession

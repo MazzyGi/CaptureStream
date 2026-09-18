@@ -54,6 +54,10 @@ public struct MainWindow: View {
         }
     }
 
+    private var selectedDeviceInvalid: Bool {
+        appState.selectedDeviceID == nil
+    }
+
     private var toolbar: some View {
         HStack(spacing: 12) {
             Picker("Device", selection: $appState.selectedDeviceID) {
@@ -74,8 +78,15 @@ public struct MainWindow: View {
             }
             .frame(minWidth: 200)
 
-            Toggle(appState.isRunning ? "Stop" : "Start", isOn: $appState.isRunning)
-                .toggleStyle(.button)
+            Button {
+                appState.isRunning.toggle()
+            } label: {
+                Text(appState.isRunning ? "Stop" : "Start")
+                    .frame(minWidth: 52)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(appState.isRunning ? .red : .accentColor)
+            .disabled(selectedDeviceInvalid)
 
             Spacer()
 

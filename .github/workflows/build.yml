@@ -54,6 +54,17 @@ jobs:
           CONTENTS="$APP/Contents"
           mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
           cp .build/arm64-apple-macosx/release/CaptureStreamApp "$CONTENTS/MacOS/CaptureStream"
+          # Metal shader 库：三种可能位置都尝试（SPM release 构建 / 资源 bundle）
+          METALLIB="$(find .build -name 'default.metallib' | head -1)"
+          if [ -n "$METALLIB" ]; then
+            cp "$METALLIB" "$CONTENTS/Resources/default.metallib"
+            echo "bundled metallib: $METALLIB"
+          fi
+          BUNDLE="$(find .build -name '*CaptureStreamUI*.bundle' -type d | head -1)"
+          if [ -n "$BUNDLE" ]; then
+            cp -R "$BUNDLE" "$CONTENTS/Resources/"
+            echo "bundled resources: $BUNDLE"
+          fi
           cat > "$CONTENTS/Info.plist" <<'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

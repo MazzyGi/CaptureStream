@@ -52,8 +52,22 @@ public final class MetalRenderer {
 
     private func buildPipelines() throws {
         guard let device else { throw InitError.noDevice }
-        guard let library = device.makeDefaultLibrary() else {
-            throw InitError.noLibrary("default library unavailable (SPM embeds Shaders.metal)")
+        // metallib 加载顺序：
+        // 1) SPM 资源 bundle（CaptureStreamUI_CaptureStreamUI.bundle，SwiftPM 生成）
+        // 2) app bundle Resources/default.metallib（手动组装 .app 时由 CI 拷贝）
+        // 3) device.makeDefaultLibrary()（CLI 直接跑 SPM 产物时的回退）
+        let library: MTLLibrary?
+        if let url = Bundle.module.url(forResource: "default", withExtension: "metallib") {
+            library = try? device.makeLibrary(URL: url)
+        } else if let bundleURL = Bundle.main.bundleURL.appendingPathComponent(
+                    "Contents/Resources/default.metallib"),
+                  FileManager.default.fileExists(atPath: bundleURL.path) {
+            library = try? device.makeLibrary(URL: bundleURL)
+        } else {
+            library = device.makeDefaultLibrary()
+        }
+        guard let library else {
+            throw InitError.noLibrary("metallib not found (SPM resource bundle / app Resources / default)")
         }
         let fragmentNames: [ScaleFilter: String] = [
             .nearest: "fragmentSample",
