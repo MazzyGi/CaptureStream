@@ -59,12 +59,13 @@ public final class MetalRenderer {
         let library: MTLLibrary?
         if let url = Bundle.module.url(forResource: "default", withExtension: "metallib") {
             library = try? device.makeLibrary(URL: url)
-        } else if let bundleURL = Bundle.main.bundleURL.appendingPathComponent(
-                    "Contents/Resources/default.metallib"),
-                  FileManager.default.fileExists(atPath: bundleURL.path) {
-            library = try? device.makeLibrary(URL: bundleURL)
         } else {
-            library = device.makeDefaultLibrary()
+            let appMetallib = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/default.metallib")
+            if FileManager.default.fileExists(atPath: appMetallib.path) {
+                library = try? device.makeLibrary(URL: appMetallib)
+            } else {
+                library = device.makeDefaultLibrary()
+            }
         }
         guard let library else {
             throw InitError.noLibrary("metallib not found (SPM resource bundle / app Resources / default)")
