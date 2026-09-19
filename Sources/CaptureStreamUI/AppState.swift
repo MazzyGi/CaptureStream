@@ -385,6 +385,7 @@ public final class AppState: ObservableObject {
         snapshotTimer?.invalidate()
         snapshotTimer = nil
         latestSnapshot = nil
+        lastCounts = (0, 0, 0)   // 会话重启计数器归零，防下溢
     }
 
     private func restartPipeline() {
@@ -432,16 +433,18 @@ public final class AppState: ObservableObject {
         monitor.tickRecord(t: CFAbsoluteTimeGetCurrent())
 
         // 诊断计数（每 2s 报告一次增量到日志）
+        // 注意：切换格式/帧率会重启会话，计数器归零——无符号减法必须饱和（下溢会 trap）
         let cb = captureSession?.callbackFrameCount ?? 0
         let rd = monitor.renderedCount
         let pr = monitor.presentedCount
         pipelineCounts = (cb, rd, pr)
-        if Int(cb) + Int(rd) + Int(pr) > 0 || isRunning {
+        func satSub(_ a: UInt64, _ b: UInt64) -> Int { a >= b ? Int(a - b) : Int(a) }
+        if cb > 0 || rd > 0 || pr > 0 || isRunning {
             if abs(CFAbsoluteTimeGetCurrent() - lastDiagAt) > 2.0 {
                 lastDiagAt = CFAbsoluteTimeGetCurrent()
-                let dcb = cb - lastCounts.callback
-                let drd = rd - lastCounts.rendered
-                let dpr = pr - lastCounts.presented
+                let dcb = satSub(cb, lastCounts.callback)
+                let drd = satSub(rd, lastCounts.rendered)
+                let dpr = satSub(pr, lastCounts.presented)
                 if dcb == 0 && isRunning {
                     log("⚠ 采集回调 2s 内 0 帧（检查：信号源开启/HDMI线/设备未被其他App占用/相机权限）")
                 } else if dcb > 0 && drd == 0 {
@@ -504,6 +507,7 @@ public final class AppState: ObservableObject {
         audio?.stopPlayback(); audio = nil
         testSource?.stop(); testSource = nil
         snapshotTimer?.invalidate(); snapshotTimer = nil
+        lastCounts = (0, 0, 0)
     }
 
     private func scheduleReconnect() {
