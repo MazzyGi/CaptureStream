@@ -327,6 +327,11 @@ public final class AppState: ObservableObject {
                         self.monitor.currentResolution = Size(width: f.width, height: f.height)
                         self.monitor.currentFormat = f.pixelFormat
                     }
+                    // 实际生效帧率（区分"请求 60"与"设备实际给出"）
+                    let eff = session.effectiveFPS
+                    self.log(String(format: "会话启动 · 请求 %@ · 实际 %.2f fps · %@",
+                                    format?.label ?? "默认", eff,
+                                    session.currentFormat?.label ?? "?"))
                     // 音频（session 操作走 sessionQueue 与视频互斥）
                     if self.settings.audioOutputDeviceID != nil || !self.settings.audioMuted {
                         let ap = AudioPipeline(config: AudioPipeline.Config(

@@ -57,7 +57,12 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
     private var configured = false
 
     /// 诊断：output 回调实际收到的帧数（FPS=0 时判断采集层是否供帧）。
-    public private(set) var callbackFrameCount: UInt64 = 0
+    /// 采集线程写/主线程读——必须经 idLock。
+    public var callbackFrameCount: UInt64 {
+        idLock.lock(); defer { idLock.unlock() }
+        return _callbackFrameCount
+    }
+    private var _callbackFrameCount: UInt64 = 0
 
     public init(frameQueueCapacity: Int = 2,
                 policy: QueueOverflowPolicy = .dropOldest) {
@@ -171,6 +176,7 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
     // MARK: - 格式切换（分辨率/FPS/像素格式，§6）
 
     private func apply(format: CaptureFormatDescriptor, to device: AVCaptureDevice) {
+        deviceRef = device
         // 匹配顺序：完全匹配 → 放宽像素格式 → 放宽帧率。绝不静默放弃——
         // 放弃会让设备停留出厂低帧率（4K 设备默认可能只有 25fps）。
         let match = device.formats.first { f in
@@ -189,16 +195,29 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
         }
 
         // 帧率锁定 min=max=目标时长：
-        // - 目标 fps 在设备区间内 → 构造精确时长（timescale 600000 整除 59.94/29.97 类）
-        // - 目标快于设备最快 → 钳到设备报告的最快值（NSException 保护）
+        // 优先取"目标 fps 恰好落在区间内"的区间（min<=fps<=max），
+        // 避免多区间设备（如 1-30 与 30-60 并存）first 命中低速区间。
         let desiredSec = 1.0 / Double(max(format.fps, 1))
         var targetDuration = CMTime(seconds: desiredSec, preferredTimescale: 600_000)
-        for r in match.videoSupportedFrameRateRanges where r.minFrameDuration.isValid {
-            let fastestSec = Double(r.minFrameDuration.value) / Double(r.minFrameDuration.timescale)
-            if desiredSec < fastestSec {
-                targetDuration = r.minFrameDuration   // 钳位到设备最快（保留 NTSC 原值）
+        var exactRange: AVFrameRateRange?
+        for r in match.videoSupportedFrameRateRanges {
+            guard r.minFrameDuration.isValid, r.maxFrameDuration.isValid else { continue }
+            let minFps = 1.0 / (Double(r.maxFrameDuration.value) / Double(r.maxFrameDuration.timescale))
+            let maxFps = 1.0 / (Double(r.minFrameDuration.value) / Double(r.minFrameDuration.timescale))
+            if Double(format.fps) >= minFps - 0.5 && Double(format.fps) <= maxFps + 0.5 {
+                exactRange = r
                 break
             }
+        }
+        if let r = exactRange {
+            // 目标时长若慢于区间最慢则用区间最慢；快于最快则用最快（NSException 保护）
+            let fastestSec = Double(r.minFrameDuration.value) / Double(r.minFrameDuration.timescale)
+            let slowestSec = Double(r.maxFrameDuration.value) / Double(r.maxFrameDuration.timescale)
+            if desiredSec < fastestSec { targetDuration = r.minFrameDuration }
+            else if desiredSec > slowestSec { targetDuration = r.maxFrameDuration }
+        } else if let r = match.videoSupportedFrameRateRanges.first(where: { $0.minFrameDuration.isValid }) {
+            // 无精确区间：钳到设备最快
+            targetDuration = r.minFrameDuration
         }
 
         do {
@@ -207,12 +226,23 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
             device.activeVideoMinFrameDuration = targetDuration
             device.activeVideoMaxFrameDuration = targetDuration
             device.unlockForConfiguration()
+            let actualFPS = 1.0 / (Double(targetDuration.value) / Double(targetDuration.timescale))
             NSLog("[CaptureStream] applied %@ @ %.4fs (%.2ffps)", Self.describe(match),
-                  targetDuration.seconds, 1.0 / targetDuration.seconds)
+                  Double(targetDuration.value) / Double(targetDuration.timescale), actualFPS)
         } catch {
             NSLog("[CaptureStream] format lock failed: \(error)")
         }
     }
+
+    /// 实际生效的帧率（apply 后读取，UI 显示用）。
+    public var effectiveFPS: Double {
+        sessionQueue.sync {
+            let d = deviceRef?.activeVideoMinFrameDuration ?? CMTime.invalid
+            guard d.isValid, d.value > 0 else { return 0 }
+            return Double(d.timescale) / Double(d.value)
+        }
+    }
+    private weak var deviceRef: AVCaptureDevice?
 
     /// 格式匹配谓词（nil = 放宽该维度）。
     nonisolated static func matches(_ f: AVCaptureDevice.Format,
@@ -273,7 +303,7 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
         idLock.lock()
         frameCounter += 1
         let id = frameCounter
-        callbackFrameCount = frameCounter
+        _callbackFrameCount = frameCounter
         idLock.unlock()
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).value
         var trace = monitor?.recordCapture(frameID: id, at: now, pts: pts) ??
