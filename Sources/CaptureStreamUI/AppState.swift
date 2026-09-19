@@ -126,6 +126,10 @@ public final class AppState: ObservableObject {
         return f > 0 ? String(format: "%.2f fps", f) : "等待帧…"
     }
 
+    /// 设备当前 activeVideoMinFrameDuration 声明的帧率（实时回读）。
+    @Published public var declaredFPS: Double = 0
+    /// 当前活跃的 AVCaptureDevice（诊断回读用）。
+
     /// dump 当前设备全部格式能力到日志（诊断 4K 支持什么帧率的决定性证据）。
     public func dumpDeviceCapabilities() {
         guard let id = selectedDeviceID, id != Self.testPatternID else {
@@ -469,6 +473,13 @@ public final class AppState: ObservableObject {
         let rd = monitor.renderedCount
         let pr = monitor.presentedCount
         pipelineCounts = (cb, rd, pr)
+        // 设备当前配置的声明帧率（activeVideoMinFrameDuration 实时回读）
+        if let dev = captureSession?.device {
+            let d = dev.activeVideoMinFrameDuration
+            if d.isValid, d.value > 0 {
+                declaredFPS = Double(d.timescale) / Double(d.value)
+            }
+        }
         func satSub(_ a: UInt64, _ b: UInt64) -> Int { a >= b ? Int(a - b) : Int(a) }
         if cb > 0 || rd > 0 || pr > 0 || isRunning {
             if abs(CFAbsoluteTimeGetCurrent() - lastDiagAt) > 2.0 {

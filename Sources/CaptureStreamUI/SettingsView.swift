@@ -50,9 +50,12 @@ struct DiagnosticsTab: View {
     var body: some View {
         Form {
             LabeledContent("采集回调帧") { Text("\(appState.pipelineCounts.callback)") }
+            LabeledContent("设备声明帧率") {
+                Text(appState.declaredFPS > 0 ? String(format: "%.2f fps", appState.declaredFPS) : "—")
+            }
+            LabeledContent("设备实测输出") { Text(appState.measuredInputFPSLabel) }
             LabeledContent("渲染帧") { Text("\(appState.pipelineCounts.rendered)") }
             LabeledContent("呈现帧") { Text("\(appState.pipelineCounts.presented)") }
-            LabeledContent("设备实测输出") { Text(appState.measuredInputFPSLabel) }
             LabeledContent("队列深度") { Text(appState.pendingFramesLabel) }
             HStack {
                 Button("导出设备能力清单") { appState.dumpDeviceCapabilities() }

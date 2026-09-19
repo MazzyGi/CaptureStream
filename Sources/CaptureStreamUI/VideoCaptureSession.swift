@@ -256,6 +256,8 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
             return Double(d.timescale) / Double(d.value)
         }
     }
+    /// 当前设备引用（诊断实时回读；线程安全只读属性访问）。
+    public var device: AVCaptureDevice? { deviceRef }
     private weak var deviceRef: AVCaptureDevice?
 
     /// 格式匹配谓词（nil = 放宽该维度）。

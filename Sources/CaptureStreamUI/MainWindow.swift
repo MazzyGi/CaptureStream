@@ -42,6 +42,15 @@ public struct MainWindow: View {
                         .padding(8)
                         .frame(maxWidth: .infinity, alignment: .center)
                 }
+                // 版本水印：防"测试到旧副本"（macOS 解压会生成 CaptureStream 2/3.app）
+                if appState.isRunning {
+                    Text("v\(AppState.appVersion)")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.35))
+                        .padding(4)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                        .allowsHitTesting(false)
+                }
             }
             if !appState.isFullscreen {
                 Divider()
@@ -139,6 +148,8 @@ public struct MainWindow: View {
             } else {
                 Text(appState.deviceName)
             }
+            Text("v\(AppState.appVersion.suffix(7))")
+                .foregroundStyle(.tertiary)
             Spacer()
             if appState.isRunning {
                 Text("队列 \(appState.pendingFramesLabel)")
