@@ -89,22 +89,18 @@ public final class RenderLoop {
             condition.unlock()
             if !isRunning { break }
 
-            // stop() 可能已斩断引用（僵尸线程复活路径）——双检
-            guard let renderer, let layer else { break }
-
             // 取帧（100ms 超时避免忙等；设备/测试图案共用渲染队列语义由外部装配）
             let source: BoundedFrameQueue<CapturedFrame>? = capture != nil ? nil : testQueue
             let frame = capture?.nextFrame(timeout: 0.1) ?? source?.pop(timeout: 0.1)
             guard let frame else {
                 idleCount += 1
                 if idleCount % 50 == 0 { renderer?.purgeCache() }
-                // 空转期间引用也可能被 stop() 斩断
-                guard renderer != nil, self.layer != nil else { break }
                 continue
             }
             idleCount = 0
 
-            guard let layer else { break }
+            // stop() 斩断引用后（僵尸线程路径）立即退出——每轮重新解包属性
+            guard let renderer, let layer else { break }
             mirrorLock.lock()
             let s = settingsMirror
             mirrorLock.unlock()
