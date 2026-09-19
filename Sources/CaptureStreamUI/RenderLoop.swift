@@ -31,7 +31,9 @@ public final class RenderLoop {
     /// 显示器刷新率（主线程设置；插帧启用判据）。
     public var displayRefreshRate: Double = 60
 
-    public weak var layer: CAMetalLayer?
+    /// strong 引用：SwiftUI 重建视图会让旧 layer 释放，weak 会导致渲染循环自杀（切换后黑屏）。
+    /// 生命周期由 stop() 斩断控制。
+    public var layer: CAMetalLayer?
 
     public private(set) var viewportSize: Size = Size(width: 1920, height: 1080)
 

@@ -100,47 +100,42 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
         guard let device = AVCaptureDevice(uniqueID: deviceID) else {
             throw CaptureSessionError.deviceNotFound(deviceID)
         }
+        // 顺序对齐 OBS macOS 采集（AVFVideoSource）：
+        // 1. session 结构配置（仅 input/output 增删）
+        // 2. commitConfiguration
+        // 3. 【commit 之后】设置 device.activeFormat + 帧率（在 begin/commit 窗口内设置
+        //    会在 commit 协商时被 session 重置回默认挡位——这正是"永远 25fps"的根因）
+        // 4. startRunning
+        var configError: CaptureSessionError?
+        session.beginConfiguration()
         do {
-            session.beginConfiguration()
-            // 配置失败也要 commit，否则 session 卡在配置态
-            var configError: CaptureSessionError?
-            do {
-                session.inputs.forEach(session.removeInput)
-                session.outputs.forEach(session.removeOutput)
-
-                guard let input = try? AVCaptureDeviceInput(device: device) else {
-                    throw CaptureSessionError.cannotConfigure("cannot create device input")
-                }
-                guard session.canAddInput(input) else {
-                    throw CaptureSessionError.cannotConfigure("cannot add input")
-                }
-                session.addInput(input)
-
-                if let fmt = format {
-                    apply(format: fmt, to: device)
-                } else {
-                    // 无显式格式时也要强制最优：设备出厂 activeFormat 常为低帧率
-                    // （UVC 默认可能 30fps 甚至更低），选最大分辨率下最高帧率并应用
-                    if let best = Self.bestFormat(for: device) {
-                        apply(format: best, to: device)
-                    }
-                }
-                currentFormat = activeFormatDescriptor(device)
-
-                guard session.canAddOutput(output) else {
-                    throw CaptureSessionError.cannotConfigure("cannot add video output")
-                }
-                session.addOutput(output)
-                configured = true
-            } catch let e as CaptureSessionError {
-                configError = e
-            } catch {
-                configError = .cannotConfigure("\(error)")
+            session.inputs.forEach(session.removeInput)
+            session.outputs.forEach(session.removeOutput)
+            guard let input = try? AVCaptureDeviceInput(device: device) else {
+                throw CaptureSessionError.cannotConfigure("cannot create device input")
             }
-            session.commitConfiguration()   // 先结束配置窗口
-            if let e = configError { throw e }
+            guard session.canAddInput(input) else {
+                throw CaptureSessionError.cannotConfigure("cannot add input")
+            }
+            session.addInput(input)
+            guard session.canAddOutput(output) else {
+                throw CaptureSessionError.cannotConfigure("cannot add video output")
+            }
+            session.addOutput(output)
+        } catch let e as CaptureSessionError {
+            configError = e
+        } catch {
+            configError = .cannotConfigure("\(error)")
         }
-        // startRunning 在配置窗口之外调用（Apple 文档要求）
+        session.commitConfiguration()
+        if let e = configError { throw e }
+
+        // commit 之后：应用设备格式与帧率（OBS 顺序）
+        let fmt = format ?? Self.bestFormat(for: device)
+        if let fmt { apply(format: fmt, to: device) }
+        currentFormat = activeFormatDescriptor(device)
+        configured = true
+
         session.startRunning()
         // 回读 AVF 实际生效的格式（commit 后设备可能否决我们的请求——带宽不足时常见）
         let finalDims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
