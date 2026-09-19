@@ -77,7 +77,7 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
                 policy: QueueOverflowPolicy = .dropOldest) {
         frameQueue = BoundedFrameQueue<CapturedFrame>(capacity: frameQueueCapacity, policy: policy)
         super.init()
-        output.videoSettings = [:]   // 原生格式输出，不做 CPU 转换（§5）
+        output.videoSettings = nil   // OBS 同款：nil = 设备原生格式直通（MJPEG 设备 AVF 自动解压）
         output.alwaysDiscardsLateVideoFrames = true   // 低延迟：晚帧直接丢（§22）
         output.setSampleBufferDelegate(self, queue: queue)
     }
@@ -100,14 +100,10 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
         guard let device = AVCaptureDevice(uniqueID: deviceID) else {
             throw CaptureSessionError.deviceNotFound(deviceID)
         }
-        // 顺序对齐 OBS macOS 采集（AVFVideoSource）：
-        // 1. session 结构配置（仅 input/output 增删）
-        // 2. commitConfiguration
-        // 3. 【commit 之后】设置 device.activeFormat + 帧率（在 begin/commit 窗口内设置
-        //    会在 commit 协商时被 session 重置回默认挡位——这正是"永远 25fps"的根因）
-        // 4. startRunning
-        var configError: CaptureSessionError?
+        // ═══ 逐行对齐 OBS OBSAVCapture.m ═══
+        // createSession: 只挂 output，不动 preset
         session.beginConfiguration()
+        var configError: CaptureSessionError?
         do {
             session.inputs.forEach(session.removeInput)
             session.outputs.forEach(session.removeOutput)
@@ -122,8 +118,8 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
                 throw CaptureSessionError.cannotConfigure("cannot add video output")
             }
             session.addOutput(output)
-            // 注：macOS 无 .inputPriority preset（iOS only）。
-            // 不设 preset，保持默认——帧率由 startRunning 后的重钉保证（见下）。
+            // OBS: videoOutput.videoSettings = nil（让 AVF 给设备原生格式；在 addOutput 后于
+            // begin/commit 窗口内设置——本实现保持 [:] 等价语义）
         } catch let e as CaptureSessionError {
             configError = e
         } catch {
@@ -132,18 +128,17 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
         session.commitConfiguration()
         if let e = configError { throw e }
 
-        // commit 之后：应用设备格式与帧率
+        configured = true
+        // OBS startCaptureSession: 仅启动；格式/帧率在【运行中】由 setFormat 热更新（下）
+        session.startRunning()
+
+        // ═══ OBS updateVideoFormat 路径（session 已运行时热更新）═══
+        // begin → lock device → 设 activeFormat + min=max=time → commit
         let fmt = format ?? Self.bestFormat(for: device)
         if let fmt { apply(format: fmt, to: device) }
         currentFormat = activeFormatDescriptor(device)
-        configured = true
 
-        session.startRunning()
-        // 实测：startRunning 协商会把 activeVideoMinFrameDuration 重置回默认挡位。
-        // OBS 的做法是在 session 运行中直接改 device 属性（hot update）——这里再钉一次。
-        if let fmt { apply(format: fmt, to: device) }
-        currentFormat = activeFormatDescriptor(device)
-        // 回读 AVF 实际生效的格式（commit 后设备可能否决我们的请求——带宽不足时常见）
+        // 回读 AVF 实际生效的格式
         let finalDims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
         let finalCodec = CMFormatDescriptionGetMediaSubType(device.activeFormat.formatDescription)
         let finalDuration = device.activeVideoMinFrameDuration
@@ -195,10 +190,14 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
 
     // MARK: - 格式切换（分辨率/FPS/像素格式，§6）
 
+    /// OBS OBSAVCapture.m updateVideoFormat 的等价实现：
+    /// session.beginConfiguration → device.lockForConfiguration → 设 activeFormat
+    /// → min=max=精确分数时长 → unlock → session.commitConfiguration。
+    /// 注意：duration 必须用设备 range 内的精确 CMTime（60000/1001），
+    /// 浮点近似（CMTime(seconds:)）与设备声明差 1 tick 时协商会回退默认挡位。
     private func apply(format: CaptureFormatDescriptor, to device: AVCaptureDevice) {
         deviceRef = device
-        // 匹配顺序：完全匹配 → 放宽像素格式 → 放宽帧率。绝不静默放弃——
-        // 放弃会让设备停留出厂低帧率（4K 设备默认可能只有 25fps）。
+        // 匹配顺序：完全匹配 → 放宽像素格式 → 放宽帧率（绝不静默放弃）
         let match = device.formats.first { f in
             Self.matches(f, width: format.width, height: format.height,
                          fps: format.fps, pixelFormat: format.pixelFormat)
@@ -214,44 +213,53 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
             return
         }
 
-        // 帧率锁定 min=max=目标时长：
-        // 优先取"目标 fps 恰好落在区间内"的区间（min<=fps<=max），
-        // 避免多区间设备（如 1-30 与 30-60 并存）first 命中低速区间。
-        let desiredSec = 1.0 / Double(max(format.fps, 1))
-        var targetDuration = CMTime(seconds: desiredSec, preferredTimescale: 600_000)
-        var exactRange: AVFrameRateRange?
+        // OBS 行 494：CMTimeCompare(range.maxFrameDuration, time) >= 0 &&
+        //             CMTimeCompare(range.minFrameDuration, time) <= 0
+        // 即精确分数必须落在 range [min, max] 内。构造候选后用 CMTimeCompare 验证。
+        let timescale: Int32 = 600_000
+        let value = Int64((Double(timescale) / Double(max(format.fps, 1))).rounded())
+        var time = CMTime(value: value, timescale: timescale)
+        var found = false
         for r in match.videoSupportedFrameRateRanges {
             guard r.minFrameDuration.isValid, r.maxFrameDuration.isValid else { continue }
-            let minFps = 1.0 / (Double(r.maxFrameDuration.value) / Double(r.maxFrameDuration.timescale))
-            let maxFps = 1.0 / (Double(r.minFrameDuration.value) / Double(r.minFrameDuration.timescale))
-            if Double(format.fps) >= minFps - 0.5 && Double(format.fps) <= maxFps + 0.5 {
-                exactRange = r
+            if CMTimeCompare(r.maxFrameDuration, time) >= 0 && CMTimeCompare(r.minFrameDuration, time) <= 0 {
+                found = true
                 break
             }
         }
-        if let r = exactRange {
-            // 目标时长若慢于区间最慢则用区间最慢；快于最快则用最快（NSException 保护）
-            let fastestSec = Double(r.minFrameDuration.value) / Double(r.minFrameDuration.timescale)
-            let slowestSec = Double(r.maxFrameDuration.value) / Double(r.maxFrameDuration.timescale)
-            if desiredSec < fastestSec { targetDuration = r.minFrameDuration }
-            else if desiredSec > slowestSec { targetDuration = r.maxFrameDuration }
-        } else if let r = match.videoSupportedFrameRateRanges.first(where: { $0.minFrameDuration.isValid }) {
-            // 无精确区间：钳到设备最快
-            targetDuration = r.minFrameDuration
+        if !found {
+            // OBS 行 488-512：目标帧率不被 range 支持时回退到 range 的边界值
+            if let r = match.videoSupportedFrameRateRanges.first(where: { $0.minFrameDuration.isValid }) {
+                // 目标快于最快 → 用最快（min duration）；否则用最慢（max duration）
+                if CMTimeCompare(r.minFrameDuration, time) > 0 {
+                    time = r.minFrameDuration
+                } else if let last = match.videoSupportedFrameRateRanges.last,
+                          last.maxFrameDuration.isValid,
+                          CMTimeCompare(last.maxFrameDuration, time) < 0 {
+                    time = last.maxFrameDuration
+                }
+                NSLog("[CaptureStream] fps %d not in range, falling back to %@",
+                      format.fps, "\(time.value)/\(time.timescale)")
+            }
         }
 
+        // ═══ OBS 嵌套结构：session 窗口包住设备锁 ═══
+        session.beginConfiguration()
         do {
             try device.lockForConfiguration()
             device.activeFormat = match
-            device.activeVideoMinFrameDuration = targetDuration
-            device.activeVideoMaxFrameDuration = targetDuration
+            device.activeVideoMinFrameDuration = time
+            device.activeVideoMaxFrameDuration = time
             device.unlockForConfiguration()
-            let actualFPS = 1.0 / (Double(targetDuration.value) / Double(targetDuration.timescale))
-            NSLog("[CaptureStream] applied %@ @ %.4fs (%.2ffps)", Self.describe(match),
-                  Double(targetDuration.value) / Double(targetDuration.timescale), actualFPS)
         } catch {
             NSLog("[CaptureStream] format lock failed: \(error)")
+            device.unlockForConfiguration()
         }
+        session.commitConfiguration()
+
+        let actualFPS = Double(time.timescale) / Double(time.value)
+        NSLog("[CaptureStream] applied %@ @ %ld/%ld (%.3ffps)", Self.describe(match),
+              time.value, time.timescale, actualFPS)
     }
 
     /// 实际生效的帧率（apply 后读取，UI 显示用）。
