@@ -387,6 +387,7 @@ public final class AppState: ObservableObject {
         loop.testQueue = sourceKind == .testPattern ? renderQueue : nil
         loop.monitor = monitor
         loop.layer = metalLayer
+        loop.displayRefreshRate = Double(metalLayer?.window?.screen?.maximumFramesPerSecond ?? 60)
         loop.updateSettings(SettingsMirror(
             scaling: s.scalingMode, filter: s.scaleFilter, aspect: s.aspectOverride,
             customScale: s.customScale, sharpen: s.sharpen, vsync: s.vsync,
@@ -411,6 +412,10 @@ public final class AppState: ObservableObject {
         snapshotTimer = nil
         latestSnapshot = nil
         lastCounts = (0, 0, 0)   // 会话重启计数器归零，防下溢
+        // 停止即黑屏：清掉最后一帧（CATransaction 同步生效，不等下一帧覆盖）
+        if let layer = metalLayer {
+            layer.contents = nil
+        }
     }
 
     private func restartPipeline() {
@@ -533,6 +538,7 @@ public final class AppState: ObservableObject {
         testSource?.stop(); testSource = nil
         snapshotTimer?.invalidate(); snapshotTimer = nil
         lastCounts = (0, 0, 0)
+        metalLayer?.contents = nil
     }
 
     private func scheduleReconnect() {

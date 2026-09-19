@@ -28,6 +28,9 @@ public final class RenderLoop {
     public var interpolationEnabled: Bool { settingsMirror.interpolation }
     public private(set) var interpolatedCount: UInt64 = 0
 
+    /// 显示器刷新率（主线程设置；插帧启用判据）。
+    public var displayRefreshRate: Double = 60
+
     public weak var layer: CAMetalLayer?
 
     public private(set) var viewportSize: Size = Size(width: 1920, height: 1080)
@@ -59,13 +62,17 @@ public final class RenderLoop {
         running = false
         condition.signal()
         condition.unlock()
-        // 等待渲染线程真正退出（Thread 无 join）：
-        // restart 时旧线程与新线程并发 nextDrawable 会交替 present → "果冻闪屏"
-        let deadline = Date().addingTimeInterval(2.0)
+        // 等待渲染线程退出（最多 500ms；卡在 nextDrawable 时无法立即退出）
+        let deadline = Date().addingTimeInterval(0.5)
         while !stopped && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.01)
+            Thread.sleep(forTimeInterval: 0.005)
         }
-        thread = nil
+        // 关键：无论线程是否已退出，立即斩断全部资源引用。
+        // 僵尸线程即使还活着：layer=nil → render 直接返回；队列=nil → pop 立即空转退出。
+        // 不这样做的话，restart 后新旧线程并发 present → 闪屏 + FPS 翻倍（N 个僵尸 = N 倍）。
+        layer = nil
+        capture = nil
+        testQueue = nil
     }
 
     public func updateViewport(_ size: Size) {
@@ -82,17 +89,22 @@ public final class RenderLoop {
             condition.unlock()
             if !isRunning { break }
 
+            // stop() 可能已斩断引用（僵尸线程复活路径）——双检
+            guard let renderer, let layer else { break }
+
             // 取帧（100ms 超时避免忙等；设备/测试图案共用渲染队列语义由外部装配）
             let source: BoundedFrameQueue<CapturedFrame>? = capture != nil ? nil : testQueue
             let frame = capture?.nextFrame(timeout: 0.1) ?? source?.pop(timeout: 0.1)
             guard let frame else {
                 idleCount += 1
                 if idleCount % 50 == 0 { renderer?.purgeCache() }
+                // 空转期间引用也可能被 stop() 斩断
+                guard renderer != nil, self.layer != nil else { break }
                 continue
             }
             idleCount = 0
 
-            guard let renderer, let layer else { continue }
+            guard let layer else { break }
             mirrorLock.lock()
             let s = settingsMirror
             mirrorLock.unlock()
@@ -107,18 +119,22 @@ public final class RenderLoop {
             var tr = frame.trace
             monitor?.recordProcess(&tr, at: CFAbsoluteTimeGetCurrent())
 
-            // 插帧（实验性，§12）：真实帧之间渲染一个"中间帧"。
-            // 第一阶段线性混合——在 VSync 空档渲染 prev/cur 混合近似中间帧，
-            // 渲染 FPS 可达 2x 输入；不是运动补偿（在 UI 明示 Experimental）。
+            // 插帧（实验性，§12）：仅在输入帧率明显低于显示刷新率一半时启用
+            // （60Hz 屏 + 30fps 输入 → 插到 60；6fps 输入插到 12 没有意义且撕裂）。
+            // prev->cur 无延迟混合近似中间帧，非运动补偿。
             if s.interpolation, let prev = previousFrame,
                CVPixelBufferGetWidth(prev.pixelBuffer) == CVPixelBufferGetWidth(frame.pixelBuffer),
                CVPixelBufferGetHeight(prev.pixelBuffer) == CVPixelBufferGetHeight(frame.pixelBuffer) {
-                renderer.renderBlended(a: prev.pixelBuffer, b: frame.pixelBuffer, t: 0.5,
-                                       trace: tr, layer: layer,
-                                       drawableSize: CGSize(width: vp.width, height: vp.height),
-                                       destRect: dest, filter: filter, sharpen: s.sharpen,
-                                       vsyncEnabled: s.vsync)
-                interpolatedCount += 1
+                let inputFPS = monitor?.measuredInputFPSApprox ?? 0
+                let screenFPS = max(displayRefreshRate, 60)
+                if inputFPS > 0 && inputFPS * 2.2 <= screenFPS {
+                    renderer.renderBlended(a: prev.pixelBuffer, b: frame.pixelBuffer, t: 0.5,
+                                           trace: tr, layer: layer,
+                                           drawableSize: CGSize(width: vp.width, height: vp.height),
+                                           destRect: dest, filter: filter, sharpen: s.sharpen,
+                                           vsyncEnabled: s.vsync)
+                    interpolatedCount += 1
+                }
             }
             previousFrame = frame
 

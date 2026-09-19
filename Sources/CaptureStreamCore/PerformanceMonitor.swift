@@ -92,6 +92,9 @@ public final class PerformanceMonitor: @unchecked Sendable {
             }
             intervalsMs.append((t - lastCaptureAt) * 1000)
             if intervalsMs.count > maxIntervals { intervalsMs.removeFirst(intervalsMs.count - maxIntervals) }
+            // 输入帧率平滑值（插帧判据用）
+            let inst = 1000.0 / max((t - lastCaptureAt) * 1000, 0.01)
+            _inputFPSApprox = _inputFPSApprox == 0 ? inst : _inputFPSApprox * 0.9 + inst * 0.1
             let last = intervalsMs.last!
             if last > dropThresholdMs { spikeCount += 1; appendEvent(DropEvent(stage: .capture, reason: .possibleDroppedFrame, at: t, expectedFrameID: frameID, detail: "interval \(String(format: "%.1f", last))ms")) }
             else if last > spikeThresholdMs { spikeCount += 1; appendEvent(DropEvent(stage: .capture, reason: .frameTimeSpike, at: t, expectedFrameID: frameID, detail: "interval \(String(format: "%.1f", last))ms")) }
@@ -192,6 +195,13 @@ public final class PerformanceMonitor: @unchecked Sendable {
     }
     private var _renderedCount: UInt64 = 0
     private var _presentedCount: UInt64 = 0
+
+    /// 近似输入帧率（渲染线程可读，无锁竞态；由采集打点侧更新）。
+    public var measuredInputFPSApprox: Double {
+        lock.lock(); defer { lock.unlock() }
+        return _inputFPSApprox
+    }
+    private var _inputFPSApprox: Double = 0
 
     /// AVFoundation 丢弃晚帧打点（queue/transport 级丢帧，§16）。
     public func noteAVFoundationDrop(at t: Double) {
