@@ -118,6 +118,31 @@ public final class AppState: ObservableObject {
         if pipelineLog.count > 200 { pipelineLog.removeFirst(pipelineLog.count - 200) }
     }
 
+    /// 设备 PTS 实测输出帧率（采样自最近帧间隔）。
+    public var measuredInputFPSLabel: String {
+        guard let s = captureSession else { return "—" }
+        let f = s.measuredInputFPS
+        return f > 0 ? String(format: "%.2f fps", f) : "等待帧…"
+    }
+
+    /// dump 当前设备全部格式能力到日志（诊断 4K 支持什么帧率的决定性证据）。
+    public func dumpDeviceCapabilities() {
+        guard let id = selectedDeviceID, id != Self.testPatternID else {
+            log("未选择真实设备")
+            return
+        }
+        log("── 设备能力清单: \(deviceName) ──")
+        if let d = deviceManager.device(withID: id) {
+            for f in d.formats {
+                log("  \(f.label)")
+            }
+        }
+        if let s = captureSession {
+            log(String(format: "当前会话: 设备实测 %.2f fps", s.measuredInputFPS))
+        }
+        log("── 清单结束 ──")
+    }
+
     /// App 版本（bundle Info.plist，CI 注入日期+SHA）。
     public static var appVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"

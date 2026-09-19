@@ -59,6 +59,13 @@ public final class RenderLoop {
         running = false
         condition.signal()
         condition.unlock()
+        // 等待渲染线程真正退出（Thread 无 join）：
+        // restart 时旧线程与新线程并发 nextDrawable 会交替 present → "果冻闪屏"
+        let deadline = Date().addingTimeInterval(2.0)
+        while !stopped && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        thread = nil
     }
 
     public func updateViewport(_ size: Size) {

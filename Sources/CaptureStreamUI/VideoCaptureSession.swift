@@ -64,6 +64,15 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
     }
     private var _callbackFrameCount: UInt64 = 0
 
+    /// 诊断：设备 PTS 实测帧间隔（1/delta = 设备真实输出帧率）。
+    public var measuredInputFPS: Double {
+        idLock.lock(); defer { idLock.unlock() }
+        return _lastPTSDeltaSec > 0 ? 1.0 / _lastPTSDeltaSec : 0
+    }
+    private var _lastPTSDeltaSec: Double = 0
+    private var _ptsSamples: UInt64 = 0
+    private var lastPTS = CMTime.invalid
+
     public init(frameQueueCapacity: Int = 2,
                 policy: QueueOverflowPolicy = .dropOldest) {
         frameQueue = BoundedFrameQueue<CapturedFrame>(capacity: frameQueueCapacity, policy: policy)
@@ -133,6 +142,16 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
         }
         // startRunning 在配置窗口之外调用（Apple 文档要求）
         session.startRunning()
+        // 回读 AVF 实际生效的格式（commit 后设备可能否决我们的请求——带宽不足时常见）
+        let finalDims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+        let finalCodec = CMFormatDescriptionGetMediaSubType(device.activeFormat.formatDescription)
+        let finalDuration = device.activeVideoMinFrameDuration
+        let finalFPS = finalDuration.isValid && finalDuration.value > 0
+            ? Double(finalDuration.timescale) / Double(finalDuration.value) : 0
+        NSLog("[CaptureStream] EFFECTIVE: %ldx%ld %@ @ %.3ffps (requested %@)",
+              finalDims.width, finalDims.height,
+              CaptureDeviceManager.pixelFormatName(finalCodec),
+              finalFPS, format?.label ?? "default")
     }
 
     /// 面积最大的分辨率下帧率最高的组合（默认格式选择）。
@@ -305,9 +324,20 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
         let id = frameCounter
         _callbackFrameCount = frameCounter
         idLock.unlock()
-        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).value
-        var trace = monitor?.recordCapture(frameID: id, at: now, pts: pts) ??
-                    FrameTrace(frameID: id, pts: pts, capturedAt: now)
+        // 设备 PTS 实测帧率（区分"设备只送 25fps"vs"传输/渲染丢帧"）
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        if pts.isValid, lastPTS.isValid, pts > lastPTS {
+            let delta = CMTimeGetSeconds(CMTimeSubtract(pts, lastPTS))
+            if delta > 0.001 {
+                idLock.lock()
+                _lastPTSDeltaSec = delta
+                _ptsSamples += 1
+                idLock.unlock()
+            }
+        }
+        lastPTS = pts
+        var trace = monitor?.recordCapture(frameID: id, at: now, pts: Int64(pts.value)) ??
+                    FrameTrace(frameID: id, pts: Int64(pts.value), capturedAt: now)
         trace.capturedAt = now
         // capture → decode 直通（UVC 无解码），同线程标记
         monitor?.recordDecode(&trace, at: now)

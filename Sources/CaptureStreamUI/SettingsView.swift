@@ -52,7 +52,16 @@ struct DiagnosticsTab: View {
             LabeledContent("采集回调帧") { Text("\(appState.pipelineCounts.callback)") }
             LabeledContent("渲染帧") { Text("\(appState.pipelineCounts.rendered)") }
             LabeledContent("呈现帧") { Text("\(appState.pipelineCounts.presented)") }
+            LabeledContent("设备实测输出") { Text(appState.measuredInputFPSLabel) }
             LabeledContent("队列深度") { Text(appState.pendingFramesLabel) }
+            HStack {
+                Button("导出设备能力清单") { appState.dumpDeviceCapabilities() }
+                Button("清空日志") { appState.pipelineLog.removeAll() }
+                Button("复制全部") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(appState.pipelineLog.joined(separator: "\n"), forType: .string)
+                }
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(appState.pipelineLog.enumerated()), id: \.offset) { _, line in
@@ -65,13 +74,6 @@ struct DiagnosticsTab: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(height: 180)
-            HStack {
-                Button("清空日志") { appState.pipelineLog.removeAll() }
-                Button("复制全部") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(appState.pipelineLog.joined(separator: "\n"), forType: .string)
-                }
-            }
         }
         .formStyle(.grouped)
     }
