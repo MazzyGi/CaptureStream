@@ -190,11 +190,10 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
 
     // MARK: - 格式切换（分辨率/FPS/像素格式，§6）
 
-    /// OBS OBSAVCapture.m updateVideoFormat 的等价实现：
-    /// session.beginConfiguration → device.lockForConfiguration → 设 activeFormat
-    /// → min=max=精确分数时长 → unlock → session.commitConfiguration。
-    /// 注意：duration 必须用设备 range 内的精确 CMTime（60000/1001），
-    /// 浮点近似（CMTime(seconds:)）与设备声明差 1 tick 时协商会回退默认挡位。
+    /// OBS OBSAVCapture.m updateVideoFormat 的等价实现。
+    /// 关键教训（两次 NSException 实证）：DAL 层只接受设备枚举的 range 端点原值
+    /// （min/max FrameDuration 本身），任何自构造的"区间内中间值"都抛异常。
+    /// OBS 的 fps 列表就来自端点枚举——这里同样只用端点原值，零构造。
     private func apply(format: CaptureFormatDescriptor, to device: AVCaptureDevice) {
         deviceRef = device
         // 匹配顺序：完全匹配 → 放宽像素格式 → 放宽帧率（绝不静默放弃）
@@ -213,34 +212,18 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
             return
         }
 
-        // OBS 行 494：CMTimeCompare(range.maxFrameDuration, time) >= 0 &&
-        //             CMTimeCompare(range.minFrameDuration, time) <= 0
-        // 即精确分数必须落在 range [min, max] 内。构造候选后用 CMTimeCompare 验证。
-        let timescale: Int32 = 600_000
-        let value = Int64((Double(timescale) / Double(max(format.fps, 1))).rounded())
-        var time = CMTime(value: value, timescale: timescale)
-        var found = false
+        // 候选时长 = 所有 range 端点原值（min=最快 / max=最慢），按目标 fps 就近选择
+        let targetSec = 1.0 / Double(max(format.fps, 1))
+        var candidates: [CMTime] = []
         for r in match.videoSupportedFrameRateRanges {
-            guard r.minFrameDuration.isValid, r.maxFrameDuration.isValid else { continue }
-            if CMTimeCompare(r.maxFrameDuration, time) >= 0 && CMTimeCompare(r.minFrameDuration, time) <= 0 {
-                found = true
-                break
-            }
+            if r.minFrameDuration.isValid { candidates.append(r.minFrameDuration) }
+            if r.maxFrameDuration.isValid { candidates.append(r.maxFrameDuration) }
         }
-        if !found {
-            // OBS 行 488-512：目标帧率不被 range 支持时回退到 range 的边界值
-            if let r = match.videoSupportedFrameRateRanges.first(where: { $0.minFrameDuration.isValid }) {
-                // 目标快于最快 → 用最快（min duration）；否则用最慢（max duration）
-                if CMTimeCompare(r.minFrameDuration, time) > 0 {
-                    time = r.minFrameDuration
-                } else if let last = match.videoSupportedFrameRateRanges.last,
-                          last.maxFrameDuration.isValid,
-                          CMTimeCompare(last.maxFrameDuration, time) < 0 {
-                    time = last.maxFrameDuration
-                }
-                NSLog("[CaptureStream] fps %d not in range, falling back to %@",
-                      format.fps, "\(time.value)/\(time.timescale)")
-            }
+        guard let time = candidates.min(by: { a, b in
+            abs(a.seconds - targetSec) < abs(b.seconds - targetSec)
+        }) ?? candidates.first else {
+            NSLog("[CaptureStream] no valid frame duration for %d fps", format.fps)
+            return
         }
 
         // ═══ OBS 嵌套结构：session 窗口包住设备锁 ═══
@@ -285,8 +268,13 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
             guard CaptureDeviceManager.pixelFormatName(codec) == pf else { return false }
         }
         if let fps {
-            return f.videoSupportedFrameRateRanges.contains {
-                $0.maxFrameRate >= Double(fps) - 0.5 && $0.minFrameRate <= Double(fps) + 0.5
+            // 与 apply 的候选集一致：端点 fps（1/minDuration 与 1/maxDuration）匹配目标
+            return f.videoSupportedFrameRateRanges.contains { r in
+                for d in [r.minFrameDuration, r.maxFrameDuration] where d.isValid && d.value > 0 {
+                    let ep = Double(d.timescale) / Double(d.value)
+                    if abs(ep - Double(fps)) < 0.75 { return true }
+                }
+                return false
             }
         }
         return true
