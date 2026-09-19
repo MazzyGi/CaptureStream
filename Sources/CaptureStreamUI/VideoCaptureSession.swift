@@ -122,6 +122,12 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
                 throw CaptureSessionError.cannotConfigure("cannot add video output")
             }
             session.addOutput(output)
+            // inputPriority：session 完全尊重 device 的 activeFormat/帧率，不按 preset 协商。
+            // 默认 .high 会在 startRunning 协商时把设备帧率打回默认挡位（实测 25fps 根因）。
+            // macOS 14 起 Swift 才暴露该 case（deployment target 13 需可用性包裹）。
+            if #available(macOS 14.0, *) {
+                session.sessionPreset = .inputPriority
+            }
         } catch let e as CaptureSessionError {
             configError = e
         } catch {
@@ -130,13 +136,17 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
         session.commitConfiguration()
         if let e = configError { throw e }
 
-        // commit 之后：应用设备格式与帧率（OBS 顺序）
+        // commit 之后：应用设备格式与帧率
         let fmt = format ?? Self.bestFormat(for: device)
         if let fmt { apply(format: fmt, to: device) }
         currentFormat = activeFormatDescriptor(device)
         configured = true
 
         session.startRunning()
+        // 实测：startRunning 协商会把 activeVideoMinFrameDuration 重置回默认挡位。
+        // OBS 的做法是在 session 运行中直接改 device 属性（hot update）——这里再钉一次。
+        if let fmt { apply(format: fmt, to: device) }
+        currentFormat = activeFormatDescriptor(device)
         // 回读 AVF 实际生效的格式（commit 后设备可能否决我们的请求——带宽不足时常见）
         let finalDims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
         let finalCodec = CMFormatDescriptionGetMediaSubType(device.activeFormat.formatDescription)
