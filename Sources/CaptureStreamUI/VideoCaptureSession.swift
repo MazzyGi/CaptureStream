@@ -122,12 +122,8 @@ public final class VideoCaptureSession: NSObject, AVCaptureVideoDataOutputSample
                 throw CaptureSessionError.cannotConfigure("cannot add video output")
             }
             session.addOutput(output)
-            // inputPriority：session 完全尊重 device 的 activeFormat/帧率，不按 preset 协商。
-            // 默认 .high 会在 startRunning 协商时把设备帧率打回默认挡位（实测 25fps 根因）。
-            // macOS 14 起 Swift 才暴露该 case（deployment target 13 需可用性包裹）。
-            if #available(macOS 14.0, *) {
-                session.sessionPreset = .inputPriority
-            }
+            // 注：macOS 无 .inputPriority preset（iOS only）。
+            // 不设 preset，保持默认——帧率由 startRunning 后的重钉保证（见下）。
         } catch let e as CaptureSessionError {
             configError = e
         } catch {
