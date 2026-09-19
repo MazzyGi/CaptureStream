@@ -184,6 +184,7 @@ public struct VideoContainerView: NSViewRepresentable {
         let v = MetalHostView()
         v.appState = appState
         appState.attach(layer: v.metalLayer)
+        appState.hostView = v
         return v
     }
 

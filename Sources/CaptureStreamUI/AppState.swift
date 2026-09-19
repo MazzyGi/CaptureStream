@@ -56,6 +56,7 @@ public final class AppState: ObservableObject {
     private var renderer: MetalRenderer?
     private var audio: AudioPipeline?
     private weak var metalLayer: CAMetalLayer?
+    weak var hostView: MetalHostView?   // 显示器刷新率查询用
 
     private var snapshotTimer: Timer?
     private var reconnectionAttempts = 0
@@ -387,7 +388,7 @@ public final class AppState: ObservableObject {
         loop.testQueue = sourceKind == .testPattern ? renderQueue : nil
         loop.monitor = monitor
         loop.layer = metalLayer
-        loop.displayRefreshRate = Double(metalLayer?.window?.screen?.maximumFramesPerSecond ?? 60)
+        loop.displayRefreshRate = Double(hostView?.window?.screen?.maximumFramesPerSecond ?? 60)
         loop.updateSettings(SettingsMirror(
             scaling: s.scalingMode, filter: s.scaleFilter, aspect: s.aspectOverride,
             customScale: s.customScale, sharpen: s.sharpen, vsync: s.vsync,
